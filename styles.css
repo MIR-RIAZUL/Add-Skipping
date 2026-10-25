@@ -1,0 +1,58 @@
+/* ==========================================================================
+   AdFast - YouTube Cosmetic Ad Removal Stylesheet
+   Pure CSS filtering: removes banners, sponsored videos, and promo feeds
+   without blocking network requests (bypasses anti-adblock detection).
+   ========================================================================== */
+
+/* Hide standard ad containers and sponsored layout slots */
+html:not(.adfast-disabled) ytd-ad-slot-renderer,
+html:not(.adfast-disabled) ytd-banner-promo-renderer,
+html:not(.adfast-disabled) ytd-in-feed-ad-layout-renderer,
+html:not(.adfast-disabled) ytd-promoted-sparkles-web-renderer,
+html:not(.adfast-disabled) ytd-promoted-video-renderer,
+html:not(.adfast-disabled) ytd-display-ad-renderer,
+html:not(.adfast-disabled) ytd-statement-banner-renderer,
+html:not(.adfast-disabled) #masthead-ad,
+html:not(.adfast-disabled) #player-ads,
+html:not(.adfast-disabled) .ytp-ad-overlay-container,
+html:not(.adfast-disabled) .ytp-ad-message-container,
+html:not(.adfast-disabled) ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-ads"],
+html:not(.adfast-disabled) ytd-rich-item-renderer:has(ytd-ad-slot-renderer),
+html:not(.adfast-disabled) ytd-rich-section-renderer:has(ytd-ad-slot-renderer),
+html:not(.adfast-disabled) ytd-video-masthead-ad-v3-renderer,
+html:not(.adfast-disabled) ytd-primetime-promo-renderer,
+html:not(.adfast-disabled) ytd-compact-promoted-video-renderer,
+html:not(.adfast-disabled) .ytp-ad-action-interstitial,
+html:not(.adfast-disabled) .ytp-ad-image-overlay,
+html:not(.adfast-disabled) .ytp-ad-overlay-slot {
+  display: none !important;
+  visibility: hidden !important;
+  height: 0 !important;
+  min-height: 0 !important;
+  pointer-events: none !important;
+}
+
+/* Instantly suppress anti-adblock enforcement dialogs */
+html:not(.adfast-disabled) tp-yt-paper-dialog:has(ytd-enforcement-message-view-model),
+html:not(.adfast-disabled) ytd-popup-container:has(ytd-enforcement-message-view-model) {
+  display: none !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+
+/* Suppress backdrop overlay if enforcement dialog triggered */
+html:not(.adfast-disabled).adfast-backdrop-blocked tp-yt-iron-overlay-backdrop {
+  display: none !important;
+  pointer-events: none !important;
+}
+
+/* Optional YouTube Shorts shelves filtering */
+html.adfast-hide-shorts ytd-rich-shelf-renderer[is-shorts],
+html.adfast-hide-shorts ytd-reel-shelf-renderer,
+html.adfast-hide-shorts ytd-rich-section-renderer:has(ytd-rich-shelf-renderer[is-shorts]),
+html.adfast-hide-shorts ytd-rich-section-renderer:has(ytd-reel-shelf-renderer) {
+  display: none !important;
+  visibility: hidden !important;
+  height: 0 !important;
+  min-height: 0 !important;
+}

@@ -109,6 +109,11 @@
     }
   }
 
+  // Listen for ad skip events dispatched by MAIN-world page-bridge
+  window.addEventListener('adfast:ad-skipped', () => {
+    incrementAdsSkipped();
+  });
+
   /**
    * Click any available skip or close buttons with debouncing
    */

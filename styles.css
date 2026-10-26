@@ -24,7 +24,13 @@ html:not(.adfast-disabled) ytd-primetime-promo-renderer,
 html:not(.adfast-disabled) ytd-compact-promoted-video-renderer,
 html:not(.adfast-disabled) .ytp-ad-action-interstitial,
 html:not(.adfast-disabled) .ytp-ad-image-overlay,
-html:not(.adfast-disabled) .ytp-ad-overlay-slot {
+html:not(.adfast-disabled) .ytp-ad-overlay-slot,
+html:not(.adfast-disabled) #movie_player.ad-showing .ytp-ad-player-overlay,
+html:not(.adfast-disabled) #movie_player.ad-showing .ytp-ad-player-overlay-layout,
+html:not(.adfast-disabled) #movie_player.ad-showing .ytp-ad-text,
+html:not(.adfast-disabled) #movie_player.ad-showing .ytp-ad-preview-container,
+html:not(.adfast-disabled) #movie_player.ad-showing .ytp-ad-skip-button-slot,
+html:not(.adfast-disabled) #movie_player.ad-interrupting .ytp-ad-player-overlay {
   display: none !important;
   visibility: hidden !important;
   height: 0 !important;

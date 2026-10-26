@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>AdFast — Full Test Suite Runner</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #0f0f0f;
+      color: #f1f1f1;
+      padding: 24px;
+    }
+    h1 {
+      font-size: 22px;
+      margin-bottom: 6px;
+      color: #ff0033;
+    }
+    h2 {
+      font-size: 16px;
+      color: #aaa;
+      margin-bottom: 20px;
+      font-weight: 400;
+    }
+    .section {
+      background: #181818;
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 10px;
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+    .section-title {
+      font-size: 14px;
+      font-weight: 700;
+      color: #ff4d6d;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 10px;
+    }
+    #output {
+      white-space: pre-wrap;
+      font-family: "Cascadia Code", "Fira Code", monospace;
+      font-size: 12px;
+      line-height: 1.5;
+      color: #ccc;
+      max-height: 600px;
+      overflow-y: auto;
+    }
+    .summary-bar {
+      display: flex;
+      gap: 20px;
+      margin-top: 16px;
+    }
+    .stat {
+      background: #242424;
+      border-radius: 8px;
+      padding: 12px 20px;
+      text-align: center;
+    }
+    .stat .num {
+      font-size: 28px;
+      font-weight: 800;
+      line-height: 1;
+    }
+    .stat .lbl {
+      font-size: 11px;
+      color: #888;
+      margin-top: 4px;
+    }
+    .pass { color: #38c853; }
+    .fail { color: #ff3355; }
+    .total { color: #f1f1f1; }
+  </style>
+</head>
+<body>
+  <h1>⚡ AdFast Test Suite</h1>
+  <h2>Unit • Integration • System • Acceptance</h2>
+
+  <div class="summary-bar" id="summaryBar" style="display:none;">
+    <div class="stat"><div class="num total" id="totalCount">0</div><div class="lbl">Total Tests</div></div>
+    <div class="stat"><div class="num pass" id="passCount">0</div><div class="lbl">Passed</div></div>
+    <div class="stat"><div class="num fail" id="failCount">0</div><div class="lbl">Failed</div></div>
+  </div>
+
+  <div class="section" style="margin-top:16px;">
+    <div class="section-title">Console Output</div>
+    <div id="output">Running tests…\n</div>
+  </div>
+
+  <script>
+    // Capture console output
+    const outputEl = document.getElementById('output');
+    const origLog = console.log;
+    const origError = console.error;
+    let totalPassed = 0;
+    let totalFailed = 0;
+
+    console.log = function (...args) {
+      origLog.apply(console, args);
+      outputEl.textContent += args.join(' ') + '\n';
+
+      // Parse summary lines
+      const text = args.join(' ');
+      const match = text.match(/(\d+) passed, (\d+) failed/);
+      if (match) {
+        totalPassed += parseInt(match[1]);
+        totalFailed += parseInt(match[2]);
+      }
+    };
+
+    console.error = function (...args) {
+      origError.apply(console, args);
+      outputEl.textContent += args.join(' ') + '\n';
+    };
+  </script>
+
+  <!-- Test files -->
+  <script src="unit/content.test.js"></script>
+  <script src="unit/popup.test.js"></script>
+  <script src="integration/integration.test.js"></script>
+  <script src="system/system.test.js"></script>
+  <script src="acceptance/acceptance.test.js"></script>
+
+  <script>
+    // Show summary after all tests load
+    setTimeout(() => {
+      document.getElementById('summaryBar').style.display = 'flex';
+      document.getElementById('totalCount').textContent = totalPassed + totalFailed;
+      document.getElementById('passCount').textContent = totalPassed;
+      document.getElementById('failCount').textContent = totalFailed;
+    }, 500);
+  </script>
+</body>
+</html>

@@ -22,6 +22,8 @@
     '.ytp-ad-skip-button',
     '.ytp-ad-skip-button-modern',
     '.ytp-ad-skip-button-slot button',
+    '.ytp-ad-player-overlay-layout__skip-or-preview-container button',
+    '[id^="skip-button"] button',
     '.ytp-ad-overlay-close-button',
     '.ytp-ad-text.ytp-ad-skip-button-text',
     '.ytp-ad-skip-button-container button',
@@ -104,7 +106,11 @@
   }
 
   /**
-   * Click any available skip or close buttons
+   * Click any available skip or close buttons.
+   * Uses three strategies for maximum reliability:
+   *  1. Standard .click() (works when isTrusted is not checked)
+   *  2. Synthetic TouchEvents (YouTube accepts mobile touch without isTrusted gate)
+   *  3. Dispatches 'adfast:skip-ad' for page-bridge.js to call player.skipAd() in MAIN world
    */
   function clickSkipButtons() {
     for (const selector of SKIP_BUTTON_SELECTORS) {
@@ -116,8 +122,23 @@
           } catch (e) {
             // Ignore click error
           }
+          // Dispatch synthetic touch events — YouTube's skip handler accepts
+          // mobile touch events without blocking on MouseEvent.isTrusted
+          try {
+            el.dispatchEvent(new TouchEvent('touchstart', { bubbles: true, cancelable: true }));
+            el.dispatchEvent(new TouchEvent('touchend', { bubbles: true, cancelable: true }));
+          } catch (e) {
+            // TouchEvent may not exist in all environments (JSDOM/test runner)
+          }
         }
       }
+    }
+
+    // Signal page-bridge.js (MAIN world) to invoke player.skipAd() / player.finishAd()
+    try {
+      window.dispatchEvent(new CustomEvent('adfast:skip-ad'));
+    } catch (e) {
+      // Ignore dispatch error
     }
   }
 
@@ -149,7 +170,10 @@
   }
 
   /**
-   * Handle active video ad bypass
+   * Handle active video ad bypass.
+   * Seeks to exact end (not duration - 0.05) and dispatches 'ended' event
+   * so the ad completes fully without stalling on the end-card.
+   * Calls clickSkipButtons() both before and after seeking for reliability.
    */
   function handleAdActive(video) {
     if (!video) return;
@@ -182,21 +206,28 @@
       video.playbackRate = 16;
     }
 
-    // Seek to the very end of the ad to trigger completion
+    // Click skip buttons BEFORE seeking (catches already-visible skip buttons)
+    clickSkipButtons();
+
+    // Seek to the exact end of the ad so it completes fully (no end-card stall)
     if (isFinite(video.duration) && video.duration > 0) {
-      const targetTime = Math.max(0, video.duration - 0.05);
-      if (video.currentTime < targetTime) {
-        video.currentTime = targetTime;
+      if (video.currentTime < video.duration) {
+        video.currentTime = video.duration;
       }
     }
 
-    // Click skip buttons if available
-    clickSkipButtons();
-
-    // Ensure playback isn't stalled
+    // Ensure playback isn't stalled; dispatch 'ended' to trigger ad completion
     if (video.paused) {
       video.play().catch(() => {});
     }
+    try {
+      video.dispatchEvent(new Event('ended'));
+    } catch (e) {
+      // Ignore dispatch error
+    }
+
+    // Click skip buttons AFTER seeking (catches skip buttons revealed by seek)
+    clickSkipButtons();
   }
 
   /**
@@ -246,7 +277,10 @@
   }
 
   /**
-   * Initialize DOM observer and periodic fallback timer
+   * Initialize DOM observer and adaptive periodic timer.
+   * - Scopes MutationObserver to #movie_player (fix M3: avoids observing entire DOM)
+   * - Uses adaptive interval: 50ms during active ads for instant multi-part ad clearing,
+   *   falls back to idle-aware check otherwise (fix M2: reduces CPU overhead)
    */
   function startEngine() {
     initConfig();
@@ -258,25 +292,109 @@
       document.addEventListener('DOMContentLoaded', applyDocumentClasses, { once: true });
     }
 
-    // Continuous observation of DOM tree
-    const observer = new MutationObserver(() => {
+    // --- Scoped MutationObserver (M3 fix) ---
+    // Observe #movie_player for class attribute changes (ad-showing / ad-interrupting)
+    // and childList for overlay elements. Falls back to document-level observation
+    // until #movie_player appears in the DOM.
+    let playerObserver = null;
+
+    function attachPlayerObserver() {
+      const player = document.getElementById('movie_player');
+      if (player && !playerObserver) {
+        playerObserver = new MutationObserver(() => {
+          processAdCycle();
+        });
+        playerObserver.observe(player, {
+          attributes: true,
+          attributeFilter: ['class'],
+          childList: true,
+          subtree: true
+        });
+      }
+    }
+
+    // Fallback document-level observer — only runs until #movie_player is found,
+    // then switches to the scoped observer
+    const bootstrapObserver = new MutationObserver(() => {
       processAdCycle();
+      if (!playerObserver) {
+        attachPlayerObserver();
+        if (playerObserver) {
+          bootstrapObserver.disconnect();
+        }
+      }
     });
 
-    observer.observe(document, {
+    bootstrapObserver.observe(document, {
       childList: true,
-      subtree: true,
-      attributes: true,
-      attributeFilter: ['class', 'src']
+      subtree: true
     });
 
-    // Lightweight 250ms periodic heartbeat to catch player state changes
-    setInterval(processAdCycle, 250);
+    // Try to attach immediately if #movie_player already exists
+    attachPlayerObserver();
+    if (playerObserver) {
+      bootstrapObserver.disconnect();
+    }
+
+    // --- Adaptive heartbeat timer (M2 fix) ---
+    // 50ms during active ads for instantaneous multi-part ad clearing (1/2 → 2/2)
+    // Skips execution when tab is hidden (document.hidden) to save CPU
+    let adIntervalId = null;
+    let idleIntervalId = null;
+
+    function startAdFastInterval() {
+      if (adIntervalId !== null) return;
+      // Clear the idle interval while running fast
+      if (idleIntervalId !== null) {
+        clearInterval(idleIntervalId);
+        idleIntervalId = null;
+      }
+      adIntervalId = setInterval(processAdCycle, 50);
+    }
+
+    function stopAdFastInterval() {
+      if (adIntervalId !== null) {
+        clearInterval(adIntervalId);
+        adIntervalId = null;
+      }
+      // Restart idle-rate polling
+      if (idleIntervalId === null) {
+        idleIntervalId = setInterval(() => {
+          if (document.hidden) return; // Skip when tab is in background
+          processAdCycle();
+          // If an ad starts, switch to fast interval
+          if (isCurrentlyInAd) {
+            startAdFastInterval();
+          }
+        }, 500);
+      }
+    }
+
+    // Wrap processAdCycle to manage adaptive timing
+    const _originalProcessAdCycle = processAdCycle;
+    // Override is not needed — we monitor isCurrentlyInAd transitions instead
+
+    // Start with idle-rate polling
+    stopAdFastInterval();
+
+    // Watch for ad state transitions to switch intervals
+    let _prevAdState = false;
+    setInterval(() => {
+      if (isCurrentlyInAd && !_prevAdState) {
+        startAdFastInterval();
+      } else if (!isCurrentlyInAd && _prevAdState) {
+        stopAdFastInterval();
+      }
+      _prevAdState = isCurrentlyInAd;
+    }, 100);
 
     // YouTube SPA navigation events
     window.addEventListener('yt-navigate-finish', () => {
       isCurrentlyInAd = false;
       processAdCycle();
+      // Re-attach observer if player was replaced during SPA navigation
+      playerObserver = null;
+      attachPlayerObserver();
     });
 
     window.addEventListener('yt-page-data-updated', processAdCycle);

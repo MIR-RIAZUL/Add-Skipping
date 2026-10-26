@@ -1,7 +1,7 @@
 /**
  * AdFast - High-speed YouTube Ad Controller & DOM Observer
  * Bypasses video ads instantaneously using player manipulation
- * without triggering anti-adblock detection.
+ * without triggering anti-adblock detection or freezing the page.
  */
 
 (() => {
@@ -15,6 +15,10 @@
   let scriptMutedVideo = false;
   let lastAdCountedTime = 0;
   const AD_COUNT_DEBOUNCE_MS = 1500;
+
+  // Debounce for skip button triggers to prevent event storming
+  let lastSkipTime = 0;
+  const SKIP_DEBOUNCE_MS = 150;
 
   // Selectors for skip and close buttons across various YouTube player versions
   const SKIP_BUTTON_SELECTORS = [
@@ -106,13 +110,15 @@
   }
 
   /**
-   * Click any available skip or close buttons.
-   * Uses three strategies for maximum reliability:
-   *  1. Standard .click() (works when isTrusted is not checked)
-   *  2. Synthetic TouchEvents (YouTube accepts mobile touch without isTrusted gate)
-   *  3. Dispatches 'adfast:skip-ad' for page-bridge.js to call player.skipAd() in MAIN world
+   * Click any available skip or close buttons with debouncing
    */
   function clickSkipButtons() {
+    const now = Date.now();
+    if (now - lastSkipTime < SKIP_DEBOUNCE_MS) {
+      return;
+    }
+    lastSkipTime = now;
+
     for (const selector of SKIP_BUTTON_SELECTORS) {
       const elements = document.querySelectorAll(selector);
       for (const el of elements) {
@@ -122,13 +128,11 @@
           } catch (e) {
             // Ignore click error
           }
-          // Dispatch synthetic touch events — YouTube's skip handler accepts
-          // mobile touch events without blocking on MouseEvent.isTrusted
           try {
             el.dispatchEvent(new TouchEvent('touchstart', { bubbles: true, cancelable: true }));
             el.dispatchEvent(new TouchEvent('touchend', { bubbles: true, cancelable: true }));
           } catch (e) {
-            // TouchEvent may not exist in all environments (JSDOM/test runner)
+            // TouchEvent may not exist in all environments
           }
         }
       }
@@ -170,20 +174,32 @@
   }
 
   /**
-   * Handle active video ad bypass.
-   * Seeks to exact end (not duration - 0.05) and dispatches 'ended' event
-   * so the ad completes fully without stalling on the end-card.
-   * Calls clickSkipButtons() both before and after seeking for reliability.
+   * Check if YouTube's player is actively playing an in-stream ad.
+   * STRICT: Only the player element classes 'ad-showing' or 'ad-interrupting'
+   * are valid indicators. Residual overlay elements in the DOM are ignored
+   * to protect the main content video.
+   */
+  function isPlayerShowingAd() {
+    const player = document.getElementById('movie_player') || document.querySelector('.html5-video-player');
+    if (!player) return false;
+    return player.classList.contains('ad-showing') || player.classList.contains('ad-interrupting');
+  }
+
+  /**
+   * Handle active video ad bypass safely without corrupting video playback
    */
   function handleAdActive(video) {
     if (!video) return;
+
+    // Strict safety check: Never manipulate the video unless confirmed in-stream ad
+    if (!isPlayerShowingAd()) return;
 
     // If starting a new ad
     if (!isCurrentlyInAd) {
       isCurrentlyInAd = true;
 
       // Capture normal rate if not in 16x speed
-      if (video.playbackRate !== 16) {
+      if (video.playbackRate > 0 && video.playbackRate <= 4) {
         savedPlaybackRate = video.playbackRate || 1;
       }
 
@@ -201,32 +217,30 @@
       }
     }
 
+    // Ensure muted
+    if (!video.muted) {
+      video.muted = true;
+      scriptMutedVideo = true;
+    }
+
     // Force 16x playback speed
     if (video.playbackRate !== 16) {
       video.playbackRate = 16;
     }
 
-    // Click skip buttons BEFORE seeking (catches already-visible skip buttons)
-    clickSkipButtons();
-
-    // Seek to the exact end of the ad so it completes fully (no end-card stall)
+    // Seek to the end of the ad to trigger natural completion
     if (isFinite(video.duration) && video.duration > 0) {
       if (video.currentTime < video.duration) {
         video.currentTime = video.duration;
       }
     }
 
-    // Ensure playback isn't stalled; dispatch 'ended' to trigger ad completion
+    // Ensure playback isn't stalled (NOTE: Never dispatchEvent('ended') - corrupts MSE pipeline)
     if (video.paused) {
       video.play().catch(() => {});
     }
-    try {
-      video.dispatchEvent(new Event('ended'));
-    } catch (e) {
-      // Ignore dispatch error
-    }
 
-    // Click skip buttons AFTER seeking (catches skip buttons revealed by seek)
+    // Click skip buttons (debounced to avoid event storming)
     clickSkipButtons();
   }
 
@@ -258,15 +272,7 @@
 
     dismissEnforcementModals();
 
-    const player = document.querySelector('#movie_player') || document.querySelector('.html5-video-player');
-    const isAdShowing = player && (
-      player.classList.contains('ad-showing') ||
-      player.classList.contains('ad-interrupting')
-    );
-
-    const hasAdOverlay = !!document.querySelector('.ytp-ad-player-overlay, .ytp-ad-player-overlay-layout');
-    const isAd = isAdShowing || hasAdOverlay;
-
+    const isAd = isPlayerShowingAd();
     const video = document.querySelector('video.html5-main-video') || document.querySelector('#movie_player video');
 
     if (isAd && video) {
@@ -277,10 +283,21 @@
   }
 
   /**
-   * Initialize DOM observer and adaptive periodic timer.
-   * - Scopes MutationObserver to #movie_player (fix M3: avoids observing entire DOM)
-   * - Uses adaptive interval: 50ms during active ads for instant multi-part ad clearing,
-   *   falls back to idle-aware check otherwise (fix M2: reduces CPU overhead)
+   * Throttled cycle runner using requestAnimationFrame to ensure
+   * the main thread is never blocked and the page stays 100% responsive
+   */
+  let isThrottled = false;
+  function throttledProcessAdCycle() {
+    if (isThrottled) return;
+    isThrottled = true;
+    window.requestAnimationFrame(() => {
+      isThrottled = false;
+      processAdCycle();
+    });
+  }
+
+  /**
+   * Initialize DOM observer and periodic heartbeat timer
    */
   function startEngine() {
     initConfig();
@@ -292,31 +309,24 @@
       document.addEventListener('DOMContentLoaded', applyDocumentClasses, { once: true });
     }
 
-    // --- Scoped MutationObserver (M3 fix) ---
-    // Observe #movie_player for class attribute changes (ad-showing / ad-interrupting)
-    // and childList for overlay elements. Falls back to document-level observation
-    // until #movie_player appears in the DOM.
+    // Scoped MutationObserver: Watches ONLY class attribute changes on #movie_player
+    // (ad-showing / ad-interrupting), NOT childList/subtree, which prevents infinite loops
     let playerObserver = null;
 
     function attachPlayerObserver() {
       const player = document.getElementById('movie_player');
       if (player && !playerObserver) {
-        playerObserver = new MutationObserver(() => {
-          processAdCycle();
-        });
+        playerObserver = new MutationObserver(throttledProcessAdCycle);
         playerObserver.observe(player, {
           attributes: true,
-          attributeFilter: ['class'],
-          childList: true,
-          subtree: true
+          attributeFilter: ['class']
         });
       }
     }
 
-    // Fallback document-level observer — only runs until #movie_player is found,
-    // then switches to the scoped observer
+    // Lightweight bootstrap observer that only runs until #movie_player appears
     const bootstrapObserver = new MutationObserver(() => {
-      processAdCycle();
+      throttledProcessAdCycle();
       if (!playerObserver) {
         attachPlayerObserver();
         if (playerObserver) {
@@ -325,75 +335,31 @@
       }
     });
 
-    bootstrapObserver.observe(document, {
+    bootstrapObserver.observe(document.documentElement || document, {
       childList: true,
       subtree: true
     });
 
-    // Try to attach immediately if #movie_player already exists
+    // Try attaching immediately
     attachPlayerObserver();
     if (playerObserver) {
       bootstrapObserver.disconnect();
     }
 
-    // --- Adaptive heartbeat timer (M2 fix) ---
-    // 50ms during active ads for instantaneous multi-part ad clearing (1/2 → 2/2)
-    // Skips execution when tab is hidden (document.hidden) to save CPU
-    let adIntervalId = null;
-    let idleIntervalId = null;
-
-    function startAdFastInterval() {
-      if (adIntervalId !== null) return;
-      // Clear the idle interval while running fast
-      if (idleIntervalId !== null) {
-        clearInterval(idleIntervalId);
-        idleIntervalId = null;
-      }
-      adIntervalId = setInterval(processAdCycle, 50);
-    }
-
-    function stopAdFastInterval() {
-      if (adIntervalId !== null) {
-        clearInterval(adIntervalId);
-        adIntervalId = null;
-      }
-      // Restart idle-rate polling
-      if (idleIntervalId === null) {
-        idleIntervalId = setInterval(() => {
-          if (document.hidden) return; // Skip when tab is in background
-          processAdCycle();
-          // If an ad starts, switch to fast interval
-          if (isCurrentlyInAd) {
-            startAdFastInterval();
-          }
-        }, 500);
-      }
-    }
-
-    // Wrap processAdCycle to manage adaptive timing
-    const _originalProcessAdCycle = processAdCycle;
-    // Override is not needed — we monitor isCurrentlyInAd transitions instead
-
-    // Start with idle-rate polling
-    stopAdFastInterval();
-
-    // Watch for ad state transitions to switch intervals
-    let _prevAdState = false;
+    // Lightweight 100ms periodic heartbeat (low CPU, skips when tab hidden unless in ad)
     setInterval(() => {
-      if (isCurrentlyInAd && !_prevAdState) {
-        startAdFastInterval();
-      } else if (!isCurrentlyInAd && _prevAdState) {
-        stopAdFastInterval();
-      }
-      _prevAdState = isCurrentlyInAd;
+      if (document.hidden && !isCurrentlyInAd) return;
+      processAdCycle();
     }, 100);
 
     // YouTube SPA navigation events
     window.addEventListener('yt-navigate-finish', () => {
       isCurrentlyInAd = false;
       processAdCycle();
-      // Re-attach observer if player was replaced during SPA navigation
-      playerObserver = null;
+      if (playerObserver) {
+        playerObserver.disconnect();
+        playerObserver = null;
+      }
       attachPlayerObserver();
     });
 

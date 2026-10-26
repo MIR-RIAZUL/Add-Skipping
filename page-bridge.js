@@ -12,19 +12,36 @@
 (() => {
   'use strict';
 
+  let lastSkipTime = 0;
+  const SKIP_DEBOUNCE_MS = 150;
+
   window.addEventListener('adfast:skip-ad', () => {
     // Respect the disabled state — do nothing if the user turned off AdFast
     if (document.documentElement.classList.contains('adfast-disabled')) {
       return;
     }
 
+    // Debounce to prevent event storming and CPU exhaustion
+    const now = Date.now();
+    if (now - lastSkipTime < SKIP_DEBOUNCE_MS) {
+      return;
+    }
+    lastSkipTime = now;
+
     const player = document.getElementById('movie_player');
     if (!player) return;
 
-    // Attempt YouTube's internal player API methods
+    // STRICT SAFETY CHECK: Only proceed if an in-stream ad is actively showing
+    const isAd =
+      player.classList.contains('ad-showing') ||
+      player.classList.contains('ad-interrupting');
+    if (!isAd) return;
+
+    // 1. Attempt YouTube's native player API methods
     try {
       if (typeof player.skipAd === 'function') {
         player.skipAd();
+        return;
       }
     } catch (e) {
       // Silently ignore — method may not exist on this player version
@@ -33,22 +50,24 @@
     try {
       if (typeof player.finishAd === 'function') {
         player.finishAd();
+        return;
       }
     } catch (e) {
       // Silently ignore
     }
 
-    // If the ad is still showing after internal API calls, force-end it
-    if (
-      player.classList.contains('ad-showing') ||
-      player.classList.contains('ad-interrupting')
-    ) {
-      const video =
-        document.querySelector('video.html5-main-video') ||
-        player.querySelector('video');
-      if (video && isFinite(video.duration) && video.duration > 0) {
+    // 2. Safe fallback: fast-forward the ad video element
+    // NOTE: NEVER dispatch a synthetic 'ended' event — it corrupts YouTube's
+    // internal MediaSource buffer state machine and locks up the player!
+    const video =
+      document.querySelector('video.html5-main-video') ||
+      player.querySelector('video');
+    if (video && isFinite(video.duration) && video.duration > 0) {
+      if (video.currentTime < video.duration) {
         video.currentTime = video.duration;
-        video.dispatchEvent(new Event('ended'));
+      }
+      if (video.paused) {
+        video.play().catch(() => {});
       }
     }
   });

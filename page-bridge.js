@@ -1,105 +1,22 @@
 /**
  * AdFast — Page Bridge (MAIN World Execution Engine)
  * ==================================================
- * Runs in the MAIN world at document_start.
+ * Executes directly inside the page's MAIN JavaScript context at document_start.
+ * Directly controls #movie_player using YouTube's internal player API.
  *
- * Implements 3 Seamless Layers:
- *  - Layer 1 (Preventive): Intercepts ytInitialPlayerResponse and fetch('/youtubei/v1/player')
- *                          to strip ad placements before YouTube's player ever schedules them.
- *                          The main video starts directly from second 0 with 0 ads and 0 buffering.
- *  - Layer 2 (Native API & Touch): Direct MAIN-world access to movie_player.skipAd(),
- *                                  finishAd(), and TouchEvent bypass for isTrusted.
- *  - Layer 3 (Ultra-Fast Finisher): If an ad slips through, immediately forces 16x speed,
- *                                   mutes, seeks to end, clicks skip, and restores video.
+ * Designed for 0% idle CPU and zero thread blocking:
+ * - NO heavy JSON recursion (prevents Page Unresponsive freeze)
+ * - NO dangerous global property overrides
+ * - Targeted class-only observer on #movie_player
+ * - Native player.skipAd() + player.finishAd() for instant 0ms ad dismissal
  */
 
 (() => {
   'use strict';
 
-  // =========================================================================
-  // LAYER 1: Strip Ad Data from YouTube Player Responses (Preventive)
-  // =========================================================================
-
-  const AD_PROPERTIES = [
-    'adPlacements',
-    'playerAds',
-    'adSlots',
-    'adBreakHeartbeatParams',
-    'adBreakParams',
-    'adTagUrl',
-    'adParams',
-    'adConfig',
-    'ads'
-  ];
-
-  function sanitizeAdData(obj) {
-    if (!obj || typeof obj !== 'object') return;
-
-    if (Array.isArray(obj)) {
-      for (let i = 0; i < obj.length; i++) {
-        sanitizeAdData(obj[i]);
-      }
-      return;
-    }
-
-    for (const prop of AD_PROPERTIES) {
-      if (prop in obj) {
-        delete obj[prop];
-      }
-    }
-
-    // Check nested playerResponse containers
-    if (obj.playerResponse && typeof obj.playerResponse === 'object') {
-      sanitizeAdData(obj.playerResponse);
-    }
-  }
-
-  // Intercept Response.prototype.json (catches SPA navigation player requests)
-  const originalResponseJson = Response.prototype.json;
-  Response.prototype.json = async function (...args) {
-    const data = await originalResponseJson.apply(this, args);
-    try {
-      if (!document.documentElement.classList.contains('adfast-disabled') && data && typeof data === 'object') {
-        sanitizeAdData(data);
-      }
-    } catch (e) {}
-    return data;
-  };
-
-  // Intercept ytInitialPlayerResponse (catches initial page load video response)
-  let _ytInitialPlayerResponse = window.ytInitialPlayerResponse;
-  if (_ytInitialPlayerResponse) {
-    sanitizeAdData(_ytInitialPlayerResponse);
-  }
-
-  try {
-    Object.defineProperty(window, 'ytInitialPlayerResponse', {
-      get() {
-        return _ytInitialPlayerResponse;
-      },
-      set(val) {
-        if (!document.documentElement.classList.contains('adfast-disabled')) {
-          if (val && typeof val === 'object') {
-            try {
-              sanitizeAdData(val);
-            } catch (e) {}
-          }
-        }
-        _ytInitialPlayerResponse = val;
-      },
-      configurable: true,
-      enumerable: true
-    });
-  } catch (e) {}
-
-
-  // =========================================================================
-  // LAYER 2 & 3: MAIN-World Instant Player Controller
-  // =========================================================================
-
-  let isCurrentlyInAd = false;
   let savedPlaybackRate = 1;
-  let adFastInterval = null;
+  let isAdActive = false;
+  let adSkipTimer = null;
 
   const SKIP_SELECTORS = [
     '.ytp-skip-ad-button',
@@ -115,163 +32,171 @@
     '.ytp-ad-overlay-close-container button'
   ];
 
-  function triggerSkipButtons() {
+  /**
+   * Dismiss the currently active in-stream ad
+   */
+  function dismissAd(player, video) {
+    if (!player) player = document.getElementById('movie_player');
+    if (!player) return;
+
+    const inAd =
+      player.classList.contains('ad-showing') ||
+      player.classList.contains('ad-interrupting');
+
+    if (!inAd) {
+      if (isAdActive) {
+        // Ad has completed — restore normal content playback
+        isAdActive = false;
+        if (adSkipTimer) {
+          clearInterval(adSkipTimer);
+          adSkipTimer = null;
+        }
+        if (!video) {
+          video =
+            document.querySelector('video.html5-main-video') ||
+            player.querySelector('video');
+        }
+        if (video) {
+          video.playbackRate =
+            savedPlaybackRate >= 0.25 && savedPlaybackRate <= 4
+              ? savedPlaybackRate
+              : 1;
+          video.muted = false;
+          if (video.paused) {
+            video.play().catch(() => {});
+          }
+        }
+      }
+      return;
+    }
+
+    // Active in-stream ad detected
+    if (!video) {
+      video =
+        document.querySelector('video.html5-main-video') ||
+        player.querySelector('video');
+    }
+
+    if (!isAdActive) {
+      isAdActive = true;
+      if (video && video.playbackRate > 0 && video.playbackRate <= 4) {
+        savedPlaybackRate = video.playbackRate;
+      }
+      window.dispatchEvent(new CustomEvent('adfast:ad-skipped'));
+    }
+
+    // 1. Mute and fast-forward to the very end
+    if (video) {
+      video.muted = true;
+      video.playbackRate = 16;
+      if (isFinite(video.duration) && video.duration > 0) {
+        video.currentTime = video.duration;
+      }
+      if (video.paused) {
+        video.play().catch(() => {});
+      }
+    }
+
+    // 2. Call YouTube's native player API methods
+    try {
+      if (typeof player.skipAd === 'function') {
+        player.skipAd();
+      }
+    } catch (e) {}
+
+    try {
+      if (typeof player.finishAd === 'function') {
+        player.finishAd();
+      }
+    } catch (e) {}
+
+    // 3. Click any visible skip button in DOM
     for (const selector of SKIP_SELECTORS) {
       const btn = document.querySelector(selector);
       if (btn) {
-        // 1. Synthetic TouchEvents bypass desktop MouseEvent.isTrusted checks
         try {
-          if (typeof Touch === 'function' && typeof TouchEvent === 'function') {
-            const touch = new Touch({
-              identifier: Date.now(),
-              target: btn,
-              clientX: 10,
-              clientY: 10,
-              radiusX: 2.5,
-              radiusY: 2.5,
-              rotationAngle: 10,
-              force: 0.5
-            });
-            btn.dispatchEvent(new TouchEvent('touchstart', {
-              bubbles: true,
-              cancelable: true,
-              touches: [touch],
-              targetTouches: [touch],
-              changedTouches: [touch]
-            }));
-            btn.dispatchEvent(new TouchEvent('touchend', {
-              bubbles: true,
-              cancelable: true,
-              touches: [],
-              targetTouches: [],
-              changedTouches: [touch]
-            }));
-          }
+          btn.click();
         } catch (e) {}
-
-        // 2. Pointer & Mouse fallbacks
-        try {
-          btn.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true }));
-          btn.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true }));
-          btn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
-          btn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
-          if (typeof btn.click === 'function') {
-            btn.click();
-          }
-        } catch (e) {}
+        break; // clicked the primary button
       }
     }
   }
 
-  function handleInstantAdBypass() {
+  /**
+   * Responds to changes in player state
+   */
+  function onPlayerStateChange() {
     if (document.documentElement.classList.contains('adfast-disabled')) {
       return;
     }
 
-    const player = document.getElementById('movie_player') || document.querySelector('.html5-video-player');
-    const isAd = player && (
-      player.classList.contains('ad-showing') ||
-      player.classList.contains('ad-interrupting')
-    );
-
-    const video = document.querySelector('video.html5-main-video') || (player ? player.querySelector('video') : null);
-
-    if (isAd && video) {
-      if (!isCurrentlyInAd) {
-        isCurrentlyInAd = true;
-        if (video.playbackRate > 0 && video.playbackRate <= 4) {
-          savedPlaybackRate = video.playbackRate;
-        }
-        window.dispatchEvent(new CustomEvent('adfast:ad-skipped'));
-        startFastPolling();
-      }
-
-      // 1. Mute audio during ad
-      video.muted = true;
-
-      // 2. Maximum playback speed
-      video.playbackRate = 16;
-
-      // 3. Fast-forward to ad end
-      if (isFinite(video.duration) && video.duration > 0) {
-        if (video.currentTime < video.duration) {
-          video.currentTime = video.duration;
-        }
-      }
-
-      // 4. Ensure playback isn't stalled
-      if (video.paused) {
-        video.play().catch(() => {});
-      }
-
-      // 5. Invoke native YouTube player skip methods directly in MAIN world
-      if (typeof player.skipAd === 'function') {
-        try { player.skipAd(); } catch (e) {}
-      }
-      if (typeof player.finishAd === 'function') {
-        try { player.finishAd(); } catch (e) {}
-      }
-
-      // 6. Trigger skip buttons
-      triggerSkipButtons();
-
-    } else if (!isAd && isCurrentlyInAd) {
-      // Ad finished — restore normal playback
-      isCurrentlyInAd = false;
-      stopFastPolling();
-      if (video) {
-        video.playbackRate = (savedPlaybackRate >= 0.25 && savedPlaybackRate <= 4) ? savedPlaybackRate : 1;
-        video.muted = false;
-        if (video.paused) {
-          video.play().catch(() => {});
-        }
-      }
-    }
-  }
-
-  function startFastPolling() {
-    if (adFastInterval) return;
-    adFastInterval = setInterval(handleInstantAdBypass, 40);
-  }
-
-  function stopFastPolling() {
-    if (adFastInterval) {
-      clearInterval(adFastInterval);
-      adFastInterval = null;
-    }
-  }
-
-  // Listen for signal from content.js
-  window.addEventListener('adfast:skip-ad', handleInstantAdBypass);
-
-  // Scoped observer on movie_player for instantaneous ad detection
-  let playerObserver = null;
-  function attachBridgeObserver() {
     const player = document.getElementById('movie_player');
-    if (player && !playerObserver) {
-      playerObserver = new MutationObserver(handleInstantAdBypass);
-      playerObserver.observe(player, {
+    if (!player) return;
+
+    const inAd =
+      player.classList.contains('ad-showing') ||
+      player.classList.contains('ad-interrupting');
+
+    if (inAd) {
+      const video =
+        document.querySelector('video.html5-main-video') ||
+        player.querySelector('video');
+      dismissAd(player, video);
+
+      // Temporary 100ms interval ONLY while an ad is running (e.g. multi-part ads 1 of 2 -> 2 of 2)
+      if (!adSkipTimer) {
+        adSkipTimer = setInterval(() => {
+          if (
+            !player.classList.contains('ad-showing') &&
+            !player.classList.contains('ad-interrupting')
+          ) {
+            dismissAd(player, null);
+          } else {
+            dismissAd(player, null);
+          }
+        }, 100);
+      }
+    } else if (isAdActive) {
+      dismissAd(player, null);
+    }
+  }
+
+  // Targeted class-only observer on #movie_player (0% CPU when not in ad)
+  let observer = null;
+  function initObserver() {
+    const player = document.getElementById('movie_player');
+    if (player && !observer) {
+      observer = new MutationObserver(onPlayerStateChange);
+      observer.observe(player, {
         attributes: true,
         attributeFilter: ['class']
       });
+      onPlayerStateChange();
       return true;
     }
     return false;
   }
 
-  // Bootstrap observer
-  if (!attachBridgeObserver()) {
-    const waitTimer = setInterval(() => {
-      if (attachBridgeObserver()) {
-        clearInterval(waitTimer);
+  if (!initObserver()) {
+    const poll = setInterval(() => {
+      if (initObserver()) {
+        clearInterval(poll);
       }
-    }, 100);
+    }, 200);
   }
 
-  // Handle SPA transitions
+  // YouTube SPA dynamic navigation
   window.addEventListener('yt-navigate-finish', () => {
-    isCurrentlyInAd = false;
-    stopFastPolling();
-    setTimeout(attachBridgeObserver, 150);
+    isAdActive = false;
+    if (adSkipTimer) {
+      clearInterval(adSkipTimer);
+      adSkipTimer = null;
+    }
+    initObserver();
+  });
+
+  // Listen for signal from content.js
+  window.addEventListener('adfast:skip-ad', () => {
+    onPlayerStateChange();
   });
 })();

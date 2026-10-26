@@ -326,29 +326,18 @@
           attributes: true,
           attributeFilter: ['class']
         });
+        return true;
       }
+      return false;
     }
 
-    // Lightweight bootstrap observer that only runs until #movie_player appears
-    const bootstrapObserver = new MutationObserver(() => {
-      throttledProcessAdCycle();
-      if (!playerObserver) {
-        attachPlayerObserver();
-        if (playerObserver) {
-          bootstrapObserver.disconnect();
+    // Attach observer as soon as #movie_player exists (no heavy document subtree observation)
+    if (!attachPlayerObserver()) {
+      const waitTimer = setInterval(() => {
+        if (attachPlayerObserver()) {
+          clearInterval(waitTimer);
         }
-      }
-    });
-
-    bootstrapObserver.observe(document.documentElement || document, {
-      childList: true,
-      subtree: true
-    });
-
-    // Try attaching immediately
-    attachPlayerObserver();
-    if (playerObserver) {
-      bootstrapObserver.disconnect();
+      }, 200);
     }
 
     // Lightweight 100ms periodic heartbeat (low CPU, skips when tab hidden unless in ad)

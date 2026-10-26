@@ -127,18 +127,29 @@
     for (const selector of SKIP_BUTTON_SELECTORS) {
       const elements = document.querySelectorAll(selector);
       for (const el of elements) {
-        if (el && typeof el.click === 'function') {
+        const btn = (typeof el.closest === 'function' ? el.closest('button, [role="button"]') : null) || el;
+        if (btn) {
           try {
-            el.click();
-          } catch (e) {
-            // Ignore click error
-          }
-          try {
-            el.dispatchEvent(new TouchEvent('touchstart', { bubbles: true, cancelable: true }));
-            el.dispatchEvent(new TouchEvent('touchend', { bubbles: true, cancelable: true }));
-          } catch (e) {
-            // TouchEvent may not exist in all environments
-          }
+            const rect = btn.getBoundingClientRect();
+            const clientX = Math.round(rect.left + (rect.width > 0 ? rect.width / 2 : 12));
+            const clientY = Math.round(rect.top + (rect.height > 0 ? rect.height / 2 : 12));
+            const eventOpts = { bubbles: true, cancelable: true, view: window, clientX, clientY };
+
+            try {
+              btn.dispatchEvent(new PointerEvent('pointerdown', eventOpts));
+              btn.dispatchEvent(new PointerEvent('pointerup', eventOpts));
+              btn.dispatchEvent(new MouseEvent('click', eventOpts));
+            } catch (e) {}
+
+            try {
+              btn.dispatchEvent(new TouchEvent('touchstart', { bubbles: true, cancelable: true }));
+              btn.dispatchEvent(new TouchEvent('touchend', { bubbles: true, cancelable: true }));
+            } catch (e) {}
+
+            if (typeof btn.click === 'function') {
+              btn.click();
+            }
+          } catch (e) {}
         }
       }
     }

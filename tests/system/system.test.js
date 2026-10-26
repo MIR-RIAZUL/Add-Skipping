@@ -81,7 +81,7 @@ function summary() {
   const manifest = {
     manifest_version: 3,
     name: 'AdFast - Instant YouTube Ad Skipper',
-    version: '1.1.3',
+    version: '1.1.4',
     description: 'Instantly bypasses video ads and removes banner ads on YouTube without triggering anti-adblock detection.',
     permissions: ['storage'],
     host_permissions: ['*://*.youtube.com/*'],

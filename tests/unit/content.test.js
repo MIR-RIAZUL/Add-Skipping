@@ -9,9 +9,11 @@
 /* ========================================================================
    MOCK INFRASTRUCTURE
    ======================================================================== */
+(() => {
+  'use strict';
 
-// --- Mock chrome.storage.local ---
-const _storageData = { enabled: true, hideShorts: false, adsSkippedCount: 0 };
+  // --- Mock chrome.storage.local ---
+  const _storageData = { enabled: true, hideShorts: false, adsSkippedCount: 0 };
 const _storageListeners = [];
 
 const chrome = {
@@ -85,16 +87,18 @@ function summary() {
   console.log('\n▶ Suite 1: Skip Button Selectors');
 
   const SKIP_BUTTON_SELECTORS = [
-    '.ytp-skip-ad-button',
-    '.ytp-ad-skip-button',
+    'button.ytp-ad-skip-button-modern',
     '.ytp-ad-skip-button-modern',
     '.ytp-ad-skip-button-slot button',
     '.ytp-ad-player-overlay-layout__skip-or-preview-container button',
     '[id^="skip-button"] button',
+    'button.ytp-skip-ad-button',
+    'button.ytp-ad-skip-button',
+    '.ytp-skip-ad-button',
+    '.ytp-ad-skip-button',
+    '.ytp-ad-skip-button-container button',
     '.ytp-ad-overlay-close-button',
     '.ytp-ad-text.ytp-ad-skip-button-text',
-    '.ytp-ad-skip-button-container button',
-    'button.ytp-ad-skip-button',
     '.ytp-ad-overlay-close-container button',
   ];
 
@@ -244,19 +248,7 @@ function summary() {
     if (v.playbackRate !== 16) {
       v.playbackRate = 16;
     }
-    // Seek to exact duration (not duration - 0.05) so ad completes fully
-    if (isFinite(v.duration) && v.duration > 0) {
-      if (v.currentTime < v.duration) {
-        v.currentTime = v.duration;
-      }
-    }
-    // Dispatch 'ended' event to trigger ad completion
-    if (v.dispatchEvent) {
-      try {
-        v.dispatchEvent(new Event('ended'));
-        endedEventDispatched = true;
-      } catch (e) {}
-    }
+    // CRITICAL: NEVER set currentTime = duration on skippable ads to prevent end-card freeze
   }
 
   // First call — new ad start
@@ -266,7 +258,7 @@ function summary() {
   assert(video.muted === true, '3.3 — Video is muted during ad');
   assert(scriptMutedVideo === true, '3.4 — scriptMutedVideo flag set');
   assertEqual(video.playbackRate, 16, '3.5 — Playback rate set to 16x');
-  assertEqual(video.currentTime, 30, '3.6 — Seeked to exact duration (not duration - 0.05)');
+  assert(video.currentTime < video.duration, '3.6 — currentTime not forced to duration (avoids end-card freeze)');
   assertEqual(adCountIncrements, 1, '3.7 — Ad count incremented once');
 
   // Second call immediately — should NOT re-increment (debounce)
@@ -531,3 +523,4 @@ function summary() {
    ======================================================================== */
 
 summary();
+})();

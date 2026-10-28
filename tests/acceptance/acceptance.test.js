@@ -15,8 +15,10 @@
 /* ========================================================================
    MOCK INFRASTRUCTURE
    ======================================================================== */
+(() => {
+  'use strict';
 
-const _storage = { enabled: true, hideShorts: false, adsSkippedCount: 0 };
+  const _storage = { enabled: true, hideShorts: false, adsSkippedCount: 0 };
 const _listeners = [];
 
 const chrome = {
@@ -93,7 +95,7 @@ function summary() {
   video.currentTime = 0;
   video.playbackRate = 1;
   video.muted = false;
-  video.paused = false;
+  Object.defineProperty(video, 'paused', { value: false, writable: true, configurable: true });
   video.play = () => Promise.resolve();
   player.appendChild(video);
 
@@ -111,13 +113,11 @@ function summary() {
   if (isAd) {
     video.muted = true;
     video.playbackRate = 16;
-    video.currentTime = 20; // exact duration (not duration - 0.05)
     skipBtn.click();
-    video.dispatchEvent(new Event('ended')); // trigger ad completion
   }
 
   assert(autoSkipped, 'UAT-001.1 — Ad skip button clicked automatically (no user action)');
-  assertEqual(video.currentTime, 20, 'UAT-001.2 — Ad seeked to exact end instantly');
+  assert(video.currentTime < video.duration, 'UAT-001.2 — currentTime not forced to duration (avoids end-card freeze)');
   assertEqual(video.playbackRate, 16, 'UAT-001.3 — Ad played at maximum speed');
 
   // Ad finishes
@@ -369,3 +369,4 @@ function summary() {
    ======================================================================== */
 
 summary();
+})();

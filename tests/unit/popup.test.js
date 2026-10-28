@@ -8,8 +8,10 @@
 /* ========================================================================
    MOCK INFRASTRUCTURE
    ======================================================================== */
+(() => {
+  'use strict';
 
-const _popupStorage = { enabled: true, hideShorts: false, adsSkippedCount: 157 };
+  const _popupStorage = { enabled: true, hideShorts: false, adsSkippedCount: 157 };
 const _popupStorageListeners = [];
 
 const chrome = {
@@ -161,7 +163,7 @@ function summary() {
    TEST SUITE 4: Toggle change handlers
    ======================================================================== */
 
-(async function testToggleHandlers() {
+async function testToggleHandlers() {
   console.log('\n▶ Suite 4: Toggle handlers');
 
   // Simulate enable toggle change
@@ -181,13 +183,13 @@ function summary() {
   await chrome.storage.local.set({ hideShorts: false });
   const data4 = await chrome.storage.local.get({ hideShorts: false });
   assertEqual(data4.hideShorts, false, '4.4 — Shorts toggle restore writes hideShorts=false');
-})();
+}
 
 /* ========================================================================
    TEST SUITE 5: Reset counter handler
    ======================================================================== */
 
-(async function testResetCounter() {
+async function testResetCounter() {
   console.log('\n▶ Suite 5: Reset counter');
 
   // Set a value first
@@ -199,13 +201,13 @@ function summary() {
   await chrome.storage.local.set({ adsSkippedCount: 0 });
   data = await chrome.storage.local.get({ adsSkippedCount: 0 });
   assertEqual(data.adsSkippedCount, 0, '5.2 — Counter reset to 0');
-})();
+}
 
 /* ========================================================================
    TEST SUITE 6: Storage change listener
    ======================================================================== */
 
-(async function testStorageChangeListener() {
+async function testStorageChangeListener() {
   console.log('\n▶ Suite 6: Storage change listener');
 
   let receivedChanges = null;
@@ -222,13 +224,13 @@ function summary() {
   assertEqual(receivedArea, 'local', '6.2 — Area name is "local"');
   assert(receivedChanges.adsSkippedCount !== undefined, '6.3 — adsSkippedCount change present');
   assertEqual(receivedChanges.adsSkippedCount.newValue, 50, '6.4 — New value is 50');
-})();
+}
 
 /* ========================================================================
    TEST SUITE 7: DOM element ID presence (popup.html contract)
    ======================================================================== */
 
-(function testPopupDOMContract() {
+function testPopupDOMContract() {
   console.log('\n▶ Suite 7: Popup HTML element IDs contract');
 
   const requiredIds = [
@@ -246,10 +248,17 @@ function summary() {
   for (const id of requiredIds) {
     assert(typeof id === 'string' && id.length > 0, `7.${requiredIds.indexOf(id) + 1} — ID "${id}" is valid`);
   }
-})();
+}
 
 /* ========================================================================
-   OUTPUT SUMMARY
+   EXECUTE SUITES SEQUENTIALLY
    ======================================================================== */
 
-summary();
+(async () => {
+  await testToggleHandlers();
+  await testResetCounter();
+  await testStorageChangeListener();
+  testPopupDOMContract();
+  summary();
+})();
+})();

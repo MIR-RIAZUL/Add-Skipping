@@ -10,8 +10,10 @@
 /* ========================================================================
    MOCK INFRASTRUCTURE
    ======================================================================== */
+(() => {
+  'use strict';
 
-const _storage = { enabled: true, hideShorts: false, adsSkippedCount: 0 };
+  const _storage = { enabled: true, hideShorts: false, adsSkippedCount: 0 };
 const _listeners = [];
 
 const chrome = {
@@ -81,10 +83,13 @@ function summary() {
   const manifest = {
     manifest_version: 3,
     name: 'AdFast - Instant YouTube Ad Skipper',
-    version: '1.1.4',
+    version: '1.2.0',
     description: 'Instantly bypasses video ads and removes banner ads on YouTube without triggering anti-adblock detection.',
-    permissions: ['storage'],
+    permissions: ['storage', 'debugger'],
     host_permissions: ['*://*.youtube.com/*'],
+    background: {
+      service_worker: 'background.js',
+    },
     action: {
       default_popup: 'popup.html',
       default_title: 'AdFast Controls',
@@ -112,6 +117,7 @@ function summary() {
   assert(/^\d+\.\d+\.\d+$/.test(manifest.version), 'SYS-1.3 — Version is semver format');
   assert(manifest.description.length <= 132, 'SYS-1.4 — Description under 132 chars');
   assert(manifest.permissions.includes('storage'), 'SYS-1.5 — storage permission declared');
+  assert(manifest.permissions.includes('debugger'), 'SYS-1.5b — debugger permission declared for trusted clicks');
   assert(!manifest.permissions.includes('tabs'), 'SYS-1.6 — No unnecessary tabs permission');
   assert(manifest.host_permissions[0] === '*://*.youtube.com/*', 'SYS-1.7 — Host permission scoped to YouTube');
   assert(manifest.action !== undefined, 'SYS-1.8 — action key is present');
@@ -120,8 +126,8 @@ function summary() {
   assert(manifest.content_scripts[0].js.includes('content.js'), 'SYS-1.11 — content.js is listed');
   assert(manifest.content_scripts[0].css.includes('styles.css'), 'SYS-1.12 — styles.css is listed');
 
-  // No V2 APIs
-  assert(manifest.background === undefined, 'SYS-1.13 — No V2 background.scripts');
+  // Background service worker (MV3)
+  assertEqual(manifest.background?.service_worker, 'background.js', 'SYS-1.13 — Manifest V3 service_worker declared');
 
   // Page bridge in MAIN world
   assert(manifest.content_scripts[1].js.includes('page-bridge.js'), 'SYS-1.14 — page-bridge.js is listed');
@@ -147,7 +153,7 @@ function summary() {
   video.currentTime = 0;
   video.playbackRate = 1;
   video.muted = false;
-  video.paused = false;
+  Object.defineProperty(video, 'paused', { value: false, writable: true, configurable: true });
   video.play = () => Promise.resolve();
   player.appendChild(video);
 
@@ -177,17 +183,11 @@ function summary() {
   video.muted = true;
   scriptMutedVideo = true;
   video.playbackRate = 16;
-  video.currentTime = 15; // exact duration (not duration - 0.05)
-
-  // Dispatch 'ended' event to trigger ad completion
-  let endedFired = false;
-  video.addEventListener('ended', () => { endedFired = true; }, { once: true });
-  video.dispatchEvent(new Event('ended'));
+  // NOTE: currentTime is NOT forced to duration on skippable ads to prevent end-card freeze
 
   assertEqual(video.playbackRate, 16, 'SYS-2.3 — Playback rate set to 16x');
   assert(video.muted, 'SYS-2.4 — Video muted during ad');
-  assertEqual(video.currentTime, 15, 'SYS-2.5 — Seeked to exact duration (not duration - 0.05)');
-  assert(endedFired, 'SYS-2.5b — "ended" event dispatched to trigger ad completion');
+  assert(video.currentTime < video.duration, 'SYS-2.5 — currentTime not forced to duration (prevents end-card freeze)');
 
   // Click skip
   skipBtn.click();
@@ -426,3 +426,4 @@ function summary() {
    ======================================================================== */
 
 summary();
+})();

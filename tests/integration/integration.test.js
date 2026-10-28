@@ -8,8 +8,10 @@
 /* ========================================================================
    MOCK INFRASTRUCTURE
    ======================================================================== */
+(() => {
+  'use strict';
 
-const _storage = { enabled: true, hideShorts: false, adsSkippedCount: 0 };
+  const _storage = { enabled: true, hideShorts: false, adsSkippedCount: 0 };
 const _listeners = [];
 
 const chrome = {
@@ -73,7 +75,7 @@ function summary() {
    INTEGRATION TEST 1: Popup Toggle → Storage → Content Script Sync
    ======================================================================== */
 
-(async function testPopupToContentSync() {
+async function testPopupToContentSync() {
   console.log('\n▶ Integration 1: Popup toggle → Storage → Content script class sync');
 
   let contentScriptEnabled = true;
@@ -95,13 +97,13 @@ function summary() {
   // Re-enable
   await chrome.storage.local.set({ enabled: true });
   assertEqual(contentScriptEnabled, true, 'INT-1.3 — Content script received re-enabled state');
-})();
+}
 
 /* ========================================================================
    INTEGRATION TEST 2: Content Script Ad Skip → Storage Counter → Popup Display
    ======================================================================== */
 
-(async function testAdSkipToPopupCounter() {
+async function testAdSkipToPopupCounter() {
   console.log('\n▶ Integration 2: Content ad skip → Storage counter → Popup display');
 
   let popupCountDisplay = '0';
@@ -129,13 +131,13 @@ function summary() {
 
   assertEqual(_storage.adsSkippedCount, 6, 'INT-2.3 — Storage counter is 6 after 6 skips');
   assertEqual(popupCountDisplay, '6', 'INT-2.4 — Popup displays 6');
-})();
+}
 
 /* ========================================================================
    INTEGRATION TEST 3: Shorts Toggle → Storage → CSS Class → DOM Hiding
    ======================================================================== */
 
-(async function testShortsToggleIntegration() {
+async function testShortsToggleIntegration() {
   console.log('\n▶ Integration 3: Shorts toggle → Storage → CSS class sync');
 
   const root = document.documentElement;
@@ -165,13 +167,13 @@ function summary() {
 
   assert(shortsState === false, 'INT-3.3 — Shorts state is false');
   assert(!root.classList.contains('adfast-hide-shorts'), 'INT-3.4 — CSS class removed from root');
-})();
+}
 
 /* ========================================================================
    INTEGRATION TEST 4: Reset Counter → Storage → Popup Display
    ======================================================================== */
 
-(async function testResetCounterIntegration() {
+async function testResetCounterIntegration() {
   console.log('\n▶ Integration 4: Reset counter → Storage → Popup display sync');
 
   let popupCount = '';
@@ -191,13 +193,13 @@ function summary() {
   await chrome.storage.local.set({ adsSkippedCount: 0 });
   assertEqual(popupCount, '0', 'INT-4.2 — Counter reset to 0');
   assertEqual(_storage.adsSkippedCount, 0, 'INT-4.3 — Storage value is 0');
-})();
+}
 
 /* ========================================================================
    INTEGRATION TEST 5: Disable Extension → Ad handler stops → Restore playback
    ======================================================================== */
 
-(async function testDisableStopsAdHandler() {
+async function testDisableStopsAdHandler() {
   console.log('\n▶ Integration 5: Disable extension → stops ad processing');
 
   let isEnabled = true;
@@ -228,13 +230,13 @@ function summary() {
   processAdCycle();
 
   assert(processAdCycleCalled, 'INT-5.2 — processAdCycle executes when re-enabled');
-})();
+}
 
 /* ========================================================================
    INTEGRATION TEST 6: CSS + JS ad hiding cooperation
    ======================================================================== */
 
-(function testCSSJSCooperation() {
+function testCSSJSCooperation() {
   console.log('\n▶ Integration 6: CSS + JS ad hiding cooperation');
 
   const root = document.documentElement;
@@ -260,13 +262,13 @@ function summary() {
   assertEqual(matches2.length, 1, 'INT-6.3 — Ad slot IS targeted when enabled');
 
   adSlot.remove();
-})();
+}
 
 /* ========================================================================
    INTEGRATION TEST 7: Multiple rapid toggles (race condition test)
    ======================================================================== */
 
-(async function testRapidToggles() {
+async function testRapidToggles() {
   console.log('\n▶ Integration 7: Rapid toggle race condition');
 
   // Rapidly toggle enabled state
@@ -277,10 +279,20 @@ function summary() {
   // After 20 toggles (0-19), last one is i=19 → 19 % 2 = 1 → false
   const data = await chrome.storage.local.get({ enabled: true });
   assertEqual(data.enabled, false, 'INT-7.1 — Final state is correct after 20 rapid toggles');
-})();
+}
 
 /* ========================================================================
-   OUTPUT SUMMARY
+   EXECUTE SUITES SEQUENTIALLY
    ======================================================================== */
 
-summary();
+(async () => {
+  await testPopupToContentSync();
+  await testAdSkipToPopupCounter();
+  await testShortsToggleIntegration();
+  await testResetCounterIntegration();
+  await testDisableStopsAdHandler();
+  testCSSJSCooperation();
+  await testRapidToggles();
+  summary();
+})();
+})();

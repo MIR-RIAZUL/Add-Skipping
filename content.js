@@ -22,16 +22,18 @@
 
   // Selectors for skip and close buttons across various YouTube player versions
   const SKIP_BUTTON_SELECTORS = [
-    '.ytp-skip-ad-button',
-    '.ytp-ad-skip-button',
+    'button.ytp-ad-skip-button-modern',
     '.ytp-ad-skip-button-modern',
     '.ytp-ad-skip-button-slot button',
     '.ytp-ad-player-overlay-layout__skip-or-preview-container button',
     '[id^="skip-button"] button',
+    'button.ytp-skip-ad-button',
+    'button.ytp-ad-skip-button',
+    '.ytp-skip-ad-button',
+    '.ytp-ad-skip-button',
+    '.ytp-ad-skip-button-container button',
     '.ytp-ad-overlay-close-button',
     '.ytp-ad-text.ytp-ad-skip-button-text',
-    '.ytp-ad-skip-button-container button',
-    'button.ytp-ad-skip-button',
     '.ytp-ad-overlay-close-container button'
   ];
 
@@ -115,14 +117,42 @@
   });
 
   /**
-   * Click any available skip or close buttons with debouncing
+   * Request a genuine hardware-level mouse click via chrome.debugger (CDP) in background.js.
+   * This generates an event with event.isTrusted === true that YouTube's player accepts.
+   */
+  function requestTrustedClick(x, y) {
+    try {
+      if (typeof chrome !== 'undefined' && chrome.runtime && typeof chrome.runtime.sendMessage === 'function') {
+        chrome.runtime.sendMessage({
+          action: 'adfast:trusted-click',
+          x,
+          y
+        }, () => {
+          if (chrome.runtime.lastError) {
+            // Background is dormant or disconnected
+          }
+        });
+      }
+    } catch (e) {
+      // Runtime context invalidated
+    }
+  }
+
+  // Listen for trusted click requests from MAIN-world page-bridge.js
+  window.addEventListener('adfast:request-trusted-click', (e) => {
+    if (e.detail && typeof e.detail.x === 'number' && typeof e.detail.y === 'number') {
+      requestTrustedClick(e.detail.x, e.detail.y);
+    }
+  });
+
+  /**
+   * Click any available skip or close buttons using trusted CDP clicks with debouncing
    */
   function clickSkipButtons() {
     const now = Date.now();
     if (now - lastSkipTime < SKIP_DEBOUNCE_MS) {
       return;
     }
-    lastSkipTime = now;
 
     for (const selector of SKIP_BUTTON_SELECTORS) {
       const elements = document.querySelectorAll(selector);
@@ -131,30 +161,40 @@
         if (btn) {
           try {
             const rect = btn.getBoundingClientRect();
-            const clientX = Math.round(rect.left + (rect.width > 0 ? rect.width / 2 : 12));
-            const clientY = Math.round(rect.top + (rect.height > 0 ? rect.height / 2 : 12));
-            const eventOpts = { bubbles: true, cancelable: true, view: window, clientX, clientY };
+            // Verify button has real rendered dimensions in viewport
+            if (rect.width > 0 && rect.height > 0) {
+              lastSkipTime = now;
+              const clientX = Math.round(rect.left + rect.width / 2);
+              const clientY = Math.round(rect.top + rect.height / 2);
 
-            try {
-              btn.dispatchEvent(new PointerEvent('pointerdown', eventOpts));
-              btn.dispatchEvent(new PointerEvent('pointerup', eventOpts));
-              btn.dispatchEvent(new MouseEvent('click', eventOpts));
-            } catch (e) {}
+              // 1. Dispatch genuine trusted click via background service worker (CDP)
+              requestTrustedClick(clientX, clientY);
 
-            try {
-              btn.dispatchEvent(new TouchEvent('touchstart', { bubbles: true, cancelable: true }));
-              btn.dispatchEvent(new TouchEvent('touchend', { bubbles: true, cancelable: true }));
-            } catch (e) {}
+              // 2. Dispatch synthetic Pointer/Touch/Mouse events as immediate fallback
+              const eventOpts = { bubbles: true, cancelable: true, view: window, clientX, clientY };
 
-            if (typeof btn.click === 'function') {
-              btn.click();
+              try {
+                btn.dispatchEvent(new PointerEvent('pointerdown', eventOpts));
+                btn.dispatchEvent(new PointerEvent('pointerup', eventOpts));
+                btn.dispatchEvent(new MouseEvent('click', eventOpts));
+              } catch (e) {}
+
+              try {
+                btn.dispatchEvent(new TouchEvent('touchstart', { bubbles: true, cancelable: true }));
+                btn.dispatchEvent(new TouchEvent('touchend', { bubbles: true, cancelable: true }));
+              } catch (e) {}
+
+              if (typeof btn.click === 'function') {
+                btn.click();
+              }
+              break;
             }
           } catch (e) {}
         }
       }
     }
 
-    // Signal page-bridge.js (MAIN world) to invoke player.skipAd() / player.finishAd()
+    // Signal page-bridge.js (MAIN world) to run its check
     try {
       window.dispatchEvent(new CustomEvent('adfast:skip-ad'));
     } catch (e) {
@@ -239,17 +279,16 @@
       scriptMutedVideo = true;
     }
 
-    // Force 16x playback speed
+    // Force 16x playback speed to pass countdowns rapidly (~300ms for 5s)
     if (video.playbackRate !== 16) {
       video.playbackRate = 16;
     }
 
-    // Seek to the end of the ad to trigger natural completion
-    if (isFinite(video.duration) && video.duration > 0) {
-      if (video.currentTime < video.duration) {
-        video.currentTime = video.duration;
-      }
-    }
+    // CRITICAL FIX: NEVER set video.currentTime = video.duration on skippable ads!
+    // Forcing currentTime to duration triggers YouTube's post-ad end-card freeze,
+    // where the video stops and waits indefinitely for a user click.
+    // Instead, 16x speed rapidly brings up the Skip button and clickSkipButtons()
+    // sends a genuine hardware-level CDP trusted click via background.js.
 
     // Ensure playback isn't stalled (NOTE: Never dispatchEvent('ended') - corrupts MSE pipeline)
     if (video.paused) {

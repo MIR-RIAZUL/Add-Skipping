@@ -24,10 +24,12 @@
     '[id^="skip-button"] button',
     'button.ytp-skip-ad-button',
     'button.ytp-ad-skip-button',
-    '.ytp-ad-skip-button',
     '.ytp-skip-ad-button',
+    '.ytp-ad-skip-button',
+    '.ytp-ad-skip-button-container button',
     '.ytp-ad-overlay-close-button',
-    '.ytp-ad-text.ytp-ad-skip-button-text'
+    '.ytp-ad-text.ytp-ad-skip-button-text',
+    '.ytp-ad-overlay-close-container button'
   ];
 
   /**
@@ -72,7 +74,16 @@
         screenY: clientY
       };
 
-      // 1. Synthetic TouchEvents bypass desktop MouseEvent.isTrusted checks
+      // 1. Request hardware-level trusted click via content.js -> background.js (chrome.debugger CDP)
+      if (rect.width > 0 && rect.height > 0) {
+        window.dispatchEvent(
+          new CustomEvent('adfast:request-trusted-click', {
+            detail: { x: clientX, y: clientY }
+          })
+        );
+      }
+
+      // 2. Synthetic TouchEvents as immediate fallback
       if (typeof Touch === 'function' && typeof TouchEvent === 'function') {
         try {
           const touch = new Touch({
@@ -184,21 +195,20 @@
       startAdPolling();
     }
 
-    // 1. Mute and fast-forward to ad end
+    // 1. Mute and fast-forward ad at 16x speed
+    // CRITICAL FIX: DO NOT set video.currentTime = video.duration on skippable ads!
+    // Seeking to duration triggers YouTube's post-ad end-card freeze where playback
+    // halts waiting for a click. 16x speed fast-forwards through countdowns (~300ms)
+    // and triggerSkipClick dispatches a genuine CDP trusted click via background.js.
     if (video) {
       video.muted = true;
       video.playbackRate = 16;
-      if (isFinite(video.duration) && video.duration > 0) {
-        if (video.currentTime < video.duration) {
-          video.currentTime = video.duration;
-        }
-      }
       if (video.paused) {
         video.play().catch(() => {});
       }
     }
 
-    // 2. Call YouTube's native player API methods
+    // 2. Try legacy player API methods if present
     try {
       if (typeof player.skipAd === 'function') {
         player.skipAd();
@@ -211,7 +221,7 @@
       }
     } catch (e) {}
 
-    // 3. Find and auto-click any visible skip button in the DOM
+    // 3. Find and auto-click any visible skip button in the DOM with trusted CDP click
     const skipBtn = findSkipButton();
     if (skipBtn) {
       triggerSkipClick(skipBtn);

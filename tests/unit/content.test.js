@@ -126,11 +126,11 @@ function summary() {
 })();
 
 /* ========================================================================
-   TEST SUITE 2: clickSkipButtons()
+   TEST SUITE 2: clickSkipButtons() & trusted click debouncing
    ======================================================================== */
 
 (function testClickSkipButtons() {
-  console.log('\n▶ Suite 2: clickSkipButtons()');
+  console.log('\n▶ Suite 2: clickSkipButtons() & trusted click debouncing');
 
   // Create mock skip buttons in DOM
   const container = document.createElement('div');
@@ -138,76 +138,90 @@ function summary() {
   document.body.appendChild(container);
 
   let clickCount = 0;
-  let touchStartCount = 0;
-  let touchEndCount = 0;
   const btn1 = document.createElement('button');
   btn1.className = 'ytp-skip-ad-button';
   btn1.addEventListener('click', () => clickCount++);
-  btn1.addEventListener('touchstart', () => touchStartCount++);
-  btn1.addEventListener('touchend', () => touchEndCount++);
   container.appendChild(btn1);
 
-  const btn2 = document.createElement('button');
-  btn2.className = 'ytp-ad-skip-button';
-  btn2.addEventListener('click', () => clickCount++);
-  btn2.addEventListener('touchstart', () => touchStartCount++);
-  btn2.addEventListener('touchend', () => touchEndCount++);
-  container.appendChild(btn2);
-
-  // Simulate the upgraded clickSkipButtons logic
-  const SKIP_BUTTON_SELECTORS = [
-    '.ytp-skip-ad-button',
-    '.ytp-ad-skip-button',
-    '.ytp-ad-skip-button-modern',
-  ];
-
-  for (const selector of SKIP_BUTTON_SELECTORS) {
-    const elements = document.querySelectorAll(selector);
-    for (const el of elements) {
-      if (el && typeof el.click === 'function') {
-        try {
-          el.click();
-        } catch (e) {
-          // Ignore click error
-        }
-        // Dispatch synthetic TouchEvents (wrapped in try/catch for compatibility)
-        try {
-          el.dispatchEvent(new TouchEvent('touchstart', { bubbles: true, cancelable: true }));
-          el.dispatchEvent(new TouchEvent('touchend', { bubbles: true, cancelable: true }));
-        } catch (e) {
-          // TouchEvent may not exist in all environments
-        }
-      }
+  // Button visibility validation function
+  function isButtonVisibleAndClickable(btn, rect) {
+    if (!btn || !rect) return false;
+    if (rect.width <= 10 || rect.height <= 10) return false;
+    if (typeof window.getComputedStyle === 'function') {
+      try {
+        const style = window.getComputedStyle(btn);
+        if (style.display === 'none') return false;
+        if (style.visibility === 'hidden') return false;
+        if (style.opacity === '0') return false;
+      } catch (e) {}
     }
+    return true;
   }
 
-  assertEqual(clickCount, 2, '2.1 — Both visible skip buttons were clicked');
+  assert(!isButtonVisibleAndClickable(btn1, { width: 0, height: 0 }), '2.1 — 0x0 button rejected');
+  assert(!isButtonVisibleAndClickable(btn1, { width: 10, height: 10 }), '2.2 — <=10px button rejected');
+  assert(isButtonVisibleAndClickable(btn1, { width: 80, height: 35 }), '2.3 — Normal rendered button accepted');
 
-  // TouchEvent tests — may not fire in all environments
-  // In browsers that support TouchEvent, we expect counts > 0
-  assert(touchStartCount >= 0, '2.2 — TouchEvent touchstart dispatched (or gracefully skipped)');
-  assert(touchEndCount >= 0, '2.3 — TouchEvent touchend dispatched (or gracefully skipped)');
+  // Trusted click cooldown and per-ad deduplication
+  const TRUSTED_CLICK_COOLDOWN_MS = 1200;
+  let lastTrustedClickTime = 0;
+  let clickedCurrentAd = false;
+  let trustedClickDispatches = 0;
+
+  function simulateRequestTrustedClick() {
+    const now = Date.now();
+    if (now - lastTrustedClickTime < TRUSTED_CLICK_COOLDOWN_MS) {
+      return false;
+    }
+    lastTrustedClickTime = now;
+    trustedClickDispatches++;
+    return true;
+  }
+
+  // First click in ad cycle
+  if (!clickedCurrentAd) {
+    clickedCurrentAd = true;
+    simulateRequestTrustedClick();
+  }
+  assertEqual(trustedClickDispatches, 1, '2.4 — First trusted click dispatched');
+
+  // Second attempt in same ad cycle
+  if (!clickedCurrentAd) {
+    simulateRequestTrustedClick();
+  }
+  assertEqual(trustedClickDispatches, 1, '2.5 — Duplicate trusted click blocked by clickedCurrentAd');
+
+  // Simulate new ad cycle after restoreNormalPlayback
+  clickedCurrentAd = false;
+  // Immediate attempt blocked by 1200ms cooldown
+  const dispatchedDuringCooldown = simulateRequestTrustedClick();
+  assert(!dispatchedDuringCooldown, '2.6 — Trusted click blocked by 1200ms cooldown');
+
+  // Standard DOM click verification
+  btn1.click();
+  assertEqual(clickCount, 1, '2.7 — Direct synthetic DOM button.click() executed safely');
 
   // Test adfast:skip-ad CustomEvent dispatch
   let bridgeEventFired = false;
   window.addEventListener('adfast:skip-ad', () => { bridgeEventFired = true; }, { once: true });
   try {
     window.dispatchEvent(new CustomEvent('adfast:skip-ad'));
-  } catch (e) {
-    // Ignore
-  }
-  assert(bridgeEventFired, '2.4 — adfast:skip-ad CustomEvent dispatched successfully');
+  } catch (e) {}
+  assert(bridgeEventFired, '2.8 — adfast:skip-ad CustomEvent dispatched successfully');
 
   // Cleanup
   container.remove();
 })();
 
 /* ========================================================================
-   TEST SUITE 3: handleAdActive() — playback speed & mute logic
+   TEST SUITE 3: handleAdActive() — playback speed & timeline safety
    ======================================================================== */
 
 (function testHandleAdActive() {
   console.log('\n▶ Suite 3: handleAdActive() logic');
+
+  let endedDispatched = false;
+  const initialCurrentTime = 7.5;
 
   // Mock video element
   const video = {
@@ -215,10 +229,15 @@ function summary() {
     muted: false,
     paused: false,
     duration: 30,
-    currentTime: 5,
+    currentTime: initialCurrentTime,
     play: () => Promise.resolve(),
+    dispatchEvent: (evt) => {
+      if (evt && evt.type === 'ended') endedDispatched = true;
+      return true;
+    }
   };
 
+  let isPlayerInAd = true;
   let isCurrentlyInAd = false;
   let savedPlaybackRate = 1;
   let scriptMutedVideo = false;
@@ -226,10 +245,10 @@ function summary() {
   const AD_COUNT_DEBOUNCE_MS = 1500;
   let adCountIncrements = 0;
 
-  let endedEventDispatched = false;
-
   function handleAdActive(v) {
     if (!v) return;
+    if (!isPlayerInAd) return;
+
     if (!isCurrentlyInAd) {
       isCurrentlyInAd = true;
       if (v.playbackRate !== 16) {
@@ -248,7 +267,7 @@ function summary() {
     if (v.playbackRate !== 16) {
       v.playbackRate = 16;
     }
-    // CRITICAL: NEVER set currentTime = duration on skippable ads to prevent end-card freeze
+    // CRITICAL: NEVER set currentTime or dispatch 'ended' to prevent jumping main video to end
   }
 
   // First call — new ad start
@@ -258,12 +277,19 @@ function summary() {
   assert(video.muted === true, '3.3 — Video is muted during ad');
   assert(scriptMutedVideo === true, '3.4 — scriptMutedVideo flag set');
   assertEqual(video.playbackRate, 16, '3.5 — Playback rate set to 16x');
-  assert(video.currentTime < video.duration, '3.6 — currentTime not forced to duration (avoids end-card freeze)');
-  assertEqual(adCountIncrements, 1, '3.7 — Ad count incremented once');
+  assertEqual(video.currentTime, initialCurrentTime, '3.6 — currentTime NEVER modified (prevents timeline jump to end)');
+  assert(!endedDispatched, '3.7 — "ended" event NEVER dispatched on video (prevents premature video ending)');
+  assertEqual(adCountIncrements, 1, '3.8 — Ad count incremented once');
 
-  // Second call immediately — should NOT re-increment (debounce)
+  // Second call immediately — debounce count
   handleAdActive(video);
-  assertEqual(adCountIncrements, 1, '3.8 — Ad count NOT re-incremented within debounce window');
+  assertEqual(adCountIncrements, 1, '3.9 — Ad count NOT re-incremented within debounce window');
+
+  // If isPlayerInAd is false, handleAdActive does nothing
+  isPlayerInAd = false;
+  const normalVideo = { playbackRate: 1, muted: false };
+  handleAdActive(normalVideo);
+  assertEqual(normalVideo.playbackRate, 1, '3.10 — Non-ad state rejected by handleAdActive');
 
   // Null video — should not throw
   let threw = false;
@@ -272,7 +298,7 @@ function summary() {
   } catch {
     threw = true;
   }
-  assert(!threw, '3.9 — handleAdActive(null) does not throw');
+  assert(!threw, '3.11 — handleAdActive(null) does not throw');
 })();
 
 /* ========================================================================
@@ -283,6 +309,7 @@ function summary() {
   console.log('\n▶ Suite 4: restoreNormalPlayback()');
 
   let isCurrentlyInAd = true;
+  let clickedCurrentAd = true;
   let savedPlaybackRate = 1.5;
   let scriptMutedVideo = true;
 
@@ -296,6 +323,7 @@ function summary() {
 
   function restoreNormalPlayback(videoElement) {
     isCurrentlyInAd = false;
+    clickedCurrentAd = false;
     const v = videoElement;
     if (!v) return;
     if (savedPlaybackRate && isFinite(savedPlaybackRate) && savedPlaybackRate >= 0.25 && savedPlaybackRate <= 4) {
@@ -311,16 +339,17 @@ function summary() {
 
   restoreNormalPlayback(video);
   assert(!isCurrentlyInAd, '4.1 — isCurrentlyInAd reset to false');
-  assertEqual(video.playbackRate, 1.5, '4.2 — Playback rate restored to saved value');
-  assert(!video.muted, '4.3 — Video unmuted');
-  assert(!scriptMutedVideo, '4.4 — scriptMutedVideo flag cleared');
+  assert(!clickedCurrentAd, '4.2 — clickedCurrentAd reset to false for next ad');
+  assertEqual(video.playbackRate, 1.5, '4.3 — Playback rate restored to saved value');
+  assert(!video.muted, '4.4 — Video unmuted');
+  assert(!scriptMutedVideo, '4.5 — scriptMutedVideo flag cleared');
 
   // Edge case: anomalous saved rate
   savedPlaybackRate = 100;
   isCurrentlyInAd = true;
   video.playbackRate = 16;
   restoreNormalPlayback(video);
-  assertEqual(video.playbackRate, 1, '4.5 — Falls back to 1x for anomalous saved rate');
+  assertEqual(video.playbackRate, 1, '4.6 — Falls back to 1x for anomalous saved rate');
 
   // Null video
   let threw = false;
@@ -329,15 +358,15 @@ function summary() {
   } catch {
     threw = true;
   }
-  assert(!threw, '4.6 — restoreNormalPlayback(null) does not throw');
+  assert(!threw, '4.7 — restoreNormalPlayback(null) does not throw');
 })();
 
 /* ========================================================================
-   TEST SUITE 5: processAdCycle() — ad detection via class names
+   TEST SUITE 5: processAdCycle() — strict ad detection via class names
    ======================================================================== */
 
 (function testProcessAdCycle() {
-  console.log('\n▶ Suite 5: processAdCycle() ad detection');
+  console.log('\n▶ Suite 5: processAdCycle() strict ad detection');
 
   // Create mock player
   const player = document.createElement('div');
@@ -350,21 +379,32 @@ function summary() {
   video.playbackRate = 1;
   player.appendChild(video);
 
-  // No ad class → should NOT be in ad state
-  const hasAdClass = player.classList.contains('ad-showing') || player.classList.contains('ad-interrupting');
-  assert(!hasAdClass, '5.1 — No ad detected when player has no ad classes');
+  // Strict check function matching content.js
+  function isPlayerShowingAd() {
+    return player.classList.contains('ad-showing') || player.classList.contains('ad-interrupting');
+  }
 
-  // Add ad class
+  // 1. No ad class → should NOT be in ad state
+  assert(!isPlayerShowingAd(), '5.1 — No ad detected when player has no ad classes');
+
+  // 2. Residual .ytp-ad-player-overlay DOM container without player classes must NOT trigger ad state
+  const residualOverlay = document.createElement('div');
+  residualOverlay.className = 'ytp-ad-player-overlay';
+  document.body.appendChild(residualOverlay);
+
+  assert(!isPlayerShowingAd(), '5.2 — Residual .ytp-ad-player-overlay does NOT falsely trigger ad detection');
+
+  // 3. Add ad-showing
   player.classList.add('ad-showing');
-  const hasAdClassNow = player.classList.contains('ad-showing');
-  assert(hasAdClassNow, '5.2 — Ad detected when "ad-showing" class present');
+  assert(isPlayerShowingAd(), '5.3 — Ad detected when "ad-showing" class present');
 
-  // Add ad-interrupting
+  // 4. Add ad-interrupting
   player.classList.remove('ad-showing');
   player.classList.add('ad-interrupting');
-  assert(player.classList.contains('ad-interrupting'), '5.3 — Ad detected with "ad-interrupting" class');
+  assert(isPlayerShowingAd(), '5.4 — Ad detected with "ad-interrupting" class');
 
   // Cleanup
+  residualOverlay.remove();
   player.remove();
 })();
 

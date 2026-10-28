@@ -11,10 +11,15 @@
   let isEnabled = true;
   let hideShorts = false;
   let isCurrentlyInAd = false;
+  let clickedCurrentAd = false;
   let savedPlaybackRate = 1;
   let scriptMutedVideo = false;
   let lastAdCountedTime = 0;
   const AD_COUNT_DEBOUNCE_MS = 1500;
+
+  // Strict 1200ms cooldown for trusted CDP clicks to prevent hitting scrub bar
+  let lastTrustedClickTime = 0;
+  const TRUSTED_CLICK_COOLDOWN_MS = 1200;
 
   // Debounce for skip button triggers to prevent event storming
   let lastSkipTime = 0;
@@ -119,8 +124,18 @@
   /**
    * Request a genuine hardware-level mouse click via chrome.debugger (CDP) in background.js.
    * This generates an event with event.isTrusted === true that YouTube's player accepts.
+   * Debounced with 1200ms cooldown and gated strictly on active ad classes to prevent hitting the scrub bar.
    */
   function requestTrustedClick(x, y) {
+    const now = Date.now();
+    if (now - lastTrustedClickTime < TRUSTED_CLICK_COOLDOWN_MS) {
+      return;
+    }
+    if (!isPlayerShowingAd()) {
+      return;
+    }
+    lastTrustedClickTime = now;
+
     try {
       if (typeof chrome !== 'undefined' && chrome.runtime && typeof chrome.runtime.sendMessage === 'function') {
         chrome.runtime.sendMessage({
@@ -128,7 +143,7 @@
           x,
           y
         }, () => {
-          if (chrome.runtime.lastError) {
+          if (chrome.runtime && chrome.runtime.lastError) {
             // Background is dormant or disconnected
           }
         });
@@ -138,17 +153,32 @@
     }
   }
 
-  // Listen for trusted click requests from MAIN-world page-bridge.js
-  window.addEventListener('adfast:request-trusted-click', (e) => {
-    if (e.detail && typeof e.detail.x === 'number' && typeof e.detail.y === 'number') {
-      requestTrustedClick(e.detail.x, e.detail.y);
+  /**
+   * Verify that a skip button has real rendered dimensions (>10x10) and is visible.
+   */
+  function isButtonVisibleAndClickable(btn, rect) {
+    if (!btn || !rect) return false;
+    if (rect.width <= 10 || rect.height <= 10) return false;
+    if (typeof window.getComputedStyle === 'function') {
+      try {
+        const style = window.getComputedStyle(btn);
+        if (style.display === 'none') return false;
+        if (style.visibility === 'hidden') return false;
+        if (style.opacity === '0') return false;
+      } catch (e) {}
     }
-  });
+    return true;
+  }
 
   /**
-   * Click any available skip or close buttons using trusted CDP clicks with debouncing
+   * Click any available skip or close buttons using trusted CDP clicks (max once per ad)
+   * and safe synthetic clicks directly on the button element.
    */
   function clickSkipButtons() {
+    if (!isPlayerShowingAd()) {
+      return;
+    }
+
     const now = Date.now();
     if (now - lastSkipTime < SKIP_DEBOUNCE_MS) {
       return;
@@ -161,18 +191,25 @@
         if (btn) {
           try {
             const rect = btn.getBoundingClientRect();
-            // Verify button has real rendered dimensions in viewport
-            if (rect.width > 0 && rect.height > 0) {
+            // Verify button has real rendered dimensions in viewport (>10x10) and is visible
+            if (isButtonVisibleAndClickable(btn, rect)) {
               lastSkipTime = now;
               const clientX = Math.round(rect.left + rect.width / 2);
               const clientY = Math.round(rect.top + rect.height / 2);
 
-              // 1. Dispatch genuine trusted click via background service worker (CDP)
-              requestTrustedClick(clientX, clientY);
+              // 1. Dispatch genuine trusted click via background CDP (only ONCE per ad cycle)
+              if (!clickedCurrentAd && isPlayerShowingAd()) {
+                clickedCurrentAd = true;
+                requestTrustedClick(clientX, clientY);
+              }
 
-              // 2. Dispatch synthetic Pointer/Touch/Mouse events as immediate fallback
+              // 2. Direct synthetic DOM click is safe and cannot hit the scrub bar beneath it
+              if (typeof btn.click === 'function') {
+                btn.click();
+              }
+
+              // Synthetic Pointer/Touch/Mouse events directly on the button element
               const eventOpts = { bubbles: true, cancelable: true, view: window, clientX, clientY };
-
               try {
                 btn.dispatchEvent(new PointerEvent('pointerdown', eventOpts));
                 btn.dispatchEvent(new PointerEvent('pointerup', eventOpts));
@@ -184,9 +221,6 @@
                 btn.dispatchEvent(new TouchEvent('touchend', { bubbles: true, cancelable: true }));
               } catch (e) {}
 
-              if (typeof btn.click === 'function') {
-                btn.click();
-              }
               break;
             }
           } catch (e) {}
@@ -207,6 +241,7 @@
    */
   function restoreNormalPlayback(videoElement) {
     isCurrentlyInAd = false;
+    clickedCurrentAd = false;
     const video = videoElement || document.querySelector('video.html5-main-video') || document.querySelector('#movie_player video');
     if (!video) return;
 
@@ -320,6 +355,24 @@
   }
 
   /**
+   * Attach loadeddata and durationchange listeners on video element to instantly
+   * guard the main video and restore normal playback when ad classes drop.
+   */
+  function attachVideoGuards(video) {
+    if (!video || video._adfastGuarded) return;
+    video._adfastGuarded = true;
+
+    const onStateCheck = () => {
+      if (!isPlayerShowingAd() && (isCurrentlyInAd || video.playbackRate === 16 || scriptMutedVideo)) {
+        restoreNormalPlayback(video);
+      }
+    };
+
+    video.addEventListener('loadeddata', onStateCheck);
+    video.addEventListener('durationchange', onStateCheck);
+  }
+
+  /**
    * Primary inspection cycle: detects ads and controls video player
    */
   function processAdCycle() {
@@ -330,9 +383,13 @@
     const isAd = isPlayerShowingAd();
     const video = document.querySelector('video.html5-main-video') || document.querySelector('#movie_player video');
 
+    if (video) {
+      attachVideoGuards(video);
+    }
+
     if (isAd && video) {
       handleAdActive(video);
-    } else if (!isAd && isCurrentlyInAd) {
+    } else if (!isAd && (isCurrentlyInAd || (video && (video.playbackRate === 16 || scriptMutedVideo)))) {
       restoreNormalPlayback(video);
     }
   }

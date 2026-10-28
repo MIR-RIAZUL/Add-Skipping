@@ -50,12 +50,27 @@
   }
 
   /**
-   * Dispatch comprehensive touch, pointer, and click events with real coordinates
+   * Dispatch clean DOM synthetic click on the button element directly
+   * ONLY when #movie_player is actively displaying an ad.
+   * Note: content.js handles debounced trusted CDP clicks.
    */
   function triggerSkipClick(button) {
     if (!button) return;
 
+    const player = document.getElementById('movie_player');
+    const inAd =
+      player &&
+      (player.classList.contains('ad-showing') ||
+       player.classList.contains('ad-interrupting'));
+
+    if (!inAd) return;
+
     try {
+      // 1. Direct synthetic DOM click is safe and cannot hit the scrub bar beneath it
+      if (typeof button.click === 'function') {
+        button.click();
+      }
+
       const rect = button.getBoundingClientRect();
       const clientX = Math.round(
         rect.left + (rect.width > 0 ? rect.width / 2 : 12)
@@ -68,58 +83,11 @@
         bubbles: true,
         cancelable: true,
         view: window,
-        clientX: clientX,
-        clientY: clientY,
-        screenX: clientX,
-        screenY: clientY
+        clientX,
+        clientY
       };
 
-      // 1. Request hardware-level trusted click via content.js -> background.js (chrome.debugger CDP)
-      if (rect.width > 0 && rect.height > 0) {
-        window.dispatchEvent(
-          new CustomEvent('adfast:request-trusted-click', {
-            detail: { x: clientX, y: clientY }
-          })
-        );
-      }
-
-      // 2. Synthetic TouchEvents as immediate fallback
-      if (typeof Touch === 'function' && typeof TouchEvent === 'function') {
-        try {
-          const touch = new Touch({
-            identifier: Date.now(),
-            target: button,
-            clientX: clientX,
-            clientY: clientY,
-            screenX: clientX,
-            screenY: clientY,
-            radiusX: 2.5,
-            radiusY: 2.5,
-            rotationAngle: 10,
-            force: 0.5
-          });
-          button.dispatchEvent(
-            new TouchEvent('touchstart', {
-              bubbles: true,
-              cancelable: true,
-              touches: [touch],
-              targetTouches: [touch],
-              changedTouches: [touch]
-            })
-          );
-          button.dispatchEvent(
-            new TouchEvent('touchend', {
-              bubbles: true,
-              cancelable: true,
-              touches: [],
-              targetTouches: [],
-              changedTouches: [touch]
-            })
-          );
-        } catch (te) {}
-      }
-
-      // 2. PointerEvents
+      // 2. PointerEvents directly on the button element
       if (typeof PointerEvent === 'function') {
         try {
           button.dispatchEvent(new PointerEvent('pointerdown', eventOptions));
@@ -127,7 +95,7 @@
         } catch (pe) {}
       }
 
-      // 3. MouseEvents
+      // 3. MouseEvents directly on the button element
       if (typeof MouseEvent === 'function') {
         try {
           button.dispatchEvent(new MouseEvent('mousedown', eventOptions));
@@ -136,9 +104,16 @@
         } catch (me) {}
       }
 
-      // 4. Standard DOM click
-      if (typeof button.click === 'function') {
-        button.click();
+      // 4. TouchEvents directly on the button element
+      if (typeof Touch === 'function' && typeof TouchEvent === 'function') {
+        try {
+          button.dispatchEvent(
+            new TouchEvent('touchstart', { bubbles: true, cancelable: true })
+          );
+          button.dispatchEvent(
+            new TouchEvent('touchend', { bubbles: true, cancelable: true })
+          );
+        } catch (te) {}
       }
     } catch (e) {}
   }

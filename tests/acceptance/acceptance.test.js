@@ -105,19 +105,24 @@ function summary() {
   skipBtn.addEventListener('click', () => (autoSkipped = true));
   player.appendChild(skipBtn);
 
+  let endedDispatched = false;
+  video.addEventListener('ended', () => { endedDispatched = true; });
+
   // Simulate: YouTube injects an ad
   player.classList.add('ad-showing');
 
   // Extension detects and auto-handles (simulated pipeline)
-  const isAd = player.classList.contains('ad-showing');
+  const isAd = player.classList.contains('ad-showing') || player.classList.contains('ad-interrupting');
   if (isAd) {
     video.muted = true;
     video.playbackRate = 16;
+    // CRITICAL: NEVER modify currentTime or dispatch ended event
     skipBtn.click();
   }
 
   assert(autoSkipped, 'UAT-001.1 — Ad skip button clicked automatically (no user action)');
-  assert(video.currentTime < video.duration, 'UAT-001.2 — currentTime not forced to duration (avoids end-card freeze)');
+  assertEqual(video.currentTime, 0, 'UAT-001.2 — currentTime NEVER modified during ad');
+  assert(!endedDispatched, 'UAT-001.2b — "ended" event NEVER dispatched during ad');
   assertEqual(video.playbackRate, 16, 'UAT-001.3 — Ad played at maximum speed');
 
   // Ad finishes
@@ -330,20 +335,25 @@ function summary() {
   assert(player.classList.contains('ad-interrupting'), 'UAT-007.2 — Mid-roll ad detected via "ad-interrupting"');
   player.classList.remove('ad-interrupting');
 
-  // Scenario C: Overlay ad
+  // Scenario C: Overlay ad elements present in DOM without player ad classes
   const overlay = document.createElement('div');
   overlay.className = 'ytp-ad-player-overlay';
   document.body.appendChild(overlay);
   const hasOverlay = !!document.querySelector('.ytp-ad-player-overlay, .ytp-ad-player-overlay-layout');
-  assert(hasOverlay, 'UAT-007.3 — Overlay ad detected');
+  assert(hasOverlay, 'UAT-007.3 — Overlay element detected in DOM');
+
+  // Ad mode strictly requires ad-showing or ad-interrupting on player
+  function isAdActiveStrict(p) {
+    return p && (p.classList.contains('ad-showing') || p.classList.contains('ad-interrupting'));
+  }
+  assert(!isAdActiveStrict(player), 'UAT-007.4 — In-stream ad mode NOT active with overlay alone (false positive prevented)');
   overlay.remove();
 
   // Scenario D: Ad overlay layout variant
   const overlayLayout = document.createElement('div');
   overlayLayout.className = 'ytp-ad-player-overlay-layout';
   document.body.appendChild(overlayLayout);
-  const hasLayout = !!document.querySelector('.ytp-ad-player-overlay, .ytp-ad-player-overlay-layout');
-  assert(hasLayout, 'UAT-007.4 — Overlay layout variant detected');
+  assert(!isAdActiveStrict(player), 'UAT-007.5 — In-stream ad mode NOT active with overlay layout alone');
   overlayLayout.remove();
 })();
 

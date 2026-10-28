@@ -8,6 +8,8 @@
 // Track currently attached tabs to prevent concurrent attach collisions
 const attachedTabs = new Set();
 const pendingClicks = new Map();
+const lastTabClickTimes = new Map();
+const CLICK_COOLDOWN_MS = 1200;
 
 /**
  * Dispatch a genuine hardware-level mouse click via Chrome DevTools Protocol (CDP).
@@ -16,17 +18,26 @@ const pendingClicks = new Map();
  * @param {number} tabId - Target Chrome tab ID
  * @param {number} x - Viewport X coordinate of the skip button center
  * @param {number} y - Viewport Y coordinate of the skip button center
- * @returns {Promise<{success: boolean, error?: string}>}
+ * @returns {Promise<{success: boolean, skipped?: boolean, error?: string}>}
  */
 async function dispatchTrustedClick(tabId, x, y) {
   if (typeof tabId !== 'number' || tabId < 0) {
     return { success: false, error: 'Invalid tab ID' };
   }
 
+  // 1200ms cooldown per tab to prevent rapid consecutive clicks hitting video scrub bar
+  const now = Date.now();
+  const lastClick = lastTabClickTimes.get(tabId) || 0;
+  if (now - lastClick < CLICK_COOLDOWN_MS) {
+    return { success: false, skipped: true, error: 'Cooldown active' };
+  }
+
   // Prevent overlapping click commands on the same tab
   if (pendingClicks.has(tabId)) {
     return pendingClicks.get(tabId);
   }
+
+  lastTabClickTimes.set(tabId, now);
 
   const clickPromise = (async () => {
     const target = { tabId };
@@ -106,6 +117,7 @@ chrome.debugger.onDetach.addListener((source) => {
 chrome.tabs.onRemoved.addListener((tabId) => {
   attachedTabs.delete(tabId);
   pendingClicks.delete(tabId);
+  lastTabClickTimes.delete(tabId);
 });
 
 // Message listener for trusted click requests from content.js

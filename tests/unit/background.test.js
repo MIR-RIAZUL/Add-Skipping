@@ -80,11 +80,24 @@
   // Unit Test 1: Message listener registration
   assert(typeof mockChrome.runtime.onMessage.addListener === 'function', 'BG-1.1 — onMessage addListener exists');
 
-  // Simulate dispatchTrustedClick logic
+  // Background service worker cooldown tracking logic
+  const CLICK_COOLDOWN_MS = 1200;
+  const lastTabClickTimes = new Map();
+
+  // Simulate dispatchTrustedClick logic matching background.js
   async function simulateDispatchTrustedClick(tabId, x, y) {
     if (typeof tabId !== 'number' || tabId < 0) {
       return { success: false, error: 'Invalid tab ID' };
     }
+
+    const now = Date.now();
+    const lastClick = lastTabClickTimes.get(tabId) || 0;
+    if (now - lastClick < CLICK_COOLDOWN_MS) {
+      return { success: false, skipped: true, error: 'Cooldown active' };
+    }
+
+    lastTabClickTimes.set(tabId, now);
+
     const target = { tabId };
     const clickX = Math.round(x);
     const clickY = Math.round(y);
@@ -113,9 +126,11 @@
     return { success: true };
   }
 
-  // Unit Test 2: Successful trusted click execution
-  simulateDispatchTrustedClick(42, 105.7, 240.2).then((res) => {
-    assert(res.success === true, 'BG-1.2 — Trusted click completes successfully');
+  // Run tests sequentially
+  (async function runAsyncTests() {
+    // Unit Test 2: Successful trusted click execution
+    const res1 = await simulateDispatchTrustedClick(42, 105.7, 240.2);
+    assert(res1.success === true, 'BG-1.2 — Trusted click completes successfully');
     assertEqual(attachedTargets.length, 1, 'BG-1.3 — Debugger attached to target');
     assertEqual(attachedTargets[0].target.tabId, 42, 'BG-1.4 — Attached to correct tab ID');
     assertEqual(attachedTargets[0].version, '1.3', 'BG-1.5 — CDP version 1.3 requested');
@@ -130,11 +145,26 @@
     assertEqual(dispatchedCommands[1].params.type, 'mouseReleased', 'BG-1.12 — Second event is mouseReleased');
     assertEqual(detachedTargets.length, 1, 'BG-1.13 — Debugger detached after click completes');
     assertEqual(detachedTargets[0].tabId, 42, 'BG-1.14 — Detached from correct tab ID');
-  });
 
-  // Unit Test 3: Invalid tab ID handling
-  simulateDispatchTrustedClick(null, 100, 200).then((res) => {
-    assert(res.success === false, 'BG-1.15 — Invalid tab ID rejected gracefully');
+    // Unit Test 3: Cooldown blocks rapid back-to-back click on the same tab (<1200ms)
+    const resRapid = await simulateDispatchTrustedClick(42, 106, 240);
+    assert(resRapid.success === false, 'BG-1.15 — Rapid back-to-back click blocked by cooldown');
+    assert(resRapid.skipped === true, 'BG-1.16 — Rapid click marked as skipped');
+    assertEqual(resRapid.error, 'Cooldown active', 'BG-1.17 — Cooldown active error returned');
+
+    // Unit Test 4: Different tab is not blocked by another tab's cooldown
+    const resDifferentTab = await simulateDispatchTrustedClick(99, 50, 50);
+    assert(resDifferentTab.success === true, 'BG-1.18 — Different tab executes click without cooldown delay');
+
+    // Unit Test 5: Tab closure cleanup removes cooldown
+    lastTabClickTimes.delete(42);
+    const resAfterCleanup = await simulateDispatchTrustedClick(42, 106, 240);
+    assert(resAfterCleanup.success === true, 'BG-1.19 — Tab closure cleans up cooldown state');
+
+    // Unit Test 6: Invalid tab ID handling
+    const resInvalid = await simulateDispatchTrustedClick(null, 100, 200);
+    assert(resInvalid.success === false, 'BG-1.20 — Invalid tab ID rejected gracefully');
+
     summary();
-  });
+  })();
 })();

@@ -163,6 +163,9 @@ function summary() {
   skipBtn.addEventListener('click', () => (skipClicked = true));
   player.appendChild(skipBtn);
 
+  let endedFired = false;
+  video.addEventListener('ended', () => { endedFired = true; });
+
   // --- Phase 1: No ad ---
   let isAdShowing = player.classList.contains('ad-showing');
   assert(!isAdShowing, 'SYS-2.1 — No ad initially');
@@ -183,11 +186,12 @@ function summary() {
   video.muted = true;
   scriptMutedVideo = true;
   video.playbackRate = 16;
-  // NOTE: currentTime is NOT forced to duration on skippable ads to prevent end-card freeze
+  // NOTE: currentTime is NEVER modified and 'ended' is NEVER fired during handleAdActive
 
   assertEqual(video.playbackRate, 16, 'SYS-2.3 — Playback rate set to 16x');
   assert(video.muted, 'SYS-2.4 — Video muted during ad');
-  assert(video.currentTime < video.duration, 'SYS-2.5 — currentTime not forced to duration (prevents end-card freeze)');
+  assertEqual(video.currentTime, 0, 'SYS-2.5 — currentTime NEVER modified during ad');
+  assert(!endedFired, 'SYS-2.5b — "ended" event NEVER dispatched during ad');
 
   // Click skip
   skipBtn.click();
@@ -416,8 +420,23 @@ function summary() {
   document.body.appendChild(overlayEl);
 
   overlay = document.querySelector('.ytp-ad-player-overlay, .ytp-ad-player-overlay-layout');
-  assert(overlay !== null, 'SYS-8.2 — Overlay detected');
+  assert(overlay !== null, 'SYS-8.2 — Overlay detected in DOM');
 
+  // Verify false positive prevention: overlay in DOM does NOT trigger ad mode without player classes
+  const player = document.createElement('div');
+  player.id = 'movie_player_test8';
+  document.body.appendChild(player);
+
+  function isPlayerShowingAdStrict(p) {
+    return p.classList.contains('ad-showing') || p.classList.contains('ad-interrupting');
+  }
+
+  assert(!isPlayerShowingAdStrict(player), 'SYS-8.3 — Overlay presence alone does NOT trigger ad mode (false positive prevented)');
+
+  player.classList.add('ad-showing');
+  assert(isPlayerShowingAdStrict(player), 'SYS-8.4 — Ad mode requires explicit ad-showing class');
+
+  player.remove();
   overlayEl.remove();
 })();
 

@@ -32,6 +32,33 @@ html:not(.adfast-disabled) .ytp-ad-overlay-slot {
   pointer-events: none !important;
 }
 
+/* Instantly hide ad video if an ad slips through — pure CSS, zero JS delay */
+html:not(.adfast-disabled) .html5-video-player.ad-showing video,
+html:not(.adfast-disabled) .html5-video-player.ad-interrupting video {
+  opacity: 0 !important;
+}
+
+/* Hide yellow ad progress bar and scrubber during ad transitions */
+html:not(.adfast-disabled) .html5-video-player.ad-showing .ytp-play-progress,
+html:not(.adfast-disabled) .html5-video-player.ad-interrupting .ytp-play-progress {
+  background: transparent !important;
+  opacity: 0 !important;
+}
+html:not(.adfast-disabled) .html5-video-player.ad-showing .ytp-scrubber-container,
+html:not(.adfast-disabled) .html5-video-player.ad-interrupting .ytp-scrubber-container,
+html:not(.adfast-disabled) .html5-video-player.ad-showing .ytp-progress-bar-container,
+html:not(.adfast-disabled) .html5-video-player.ad-interrupting .ytp-progress-bar-container,
+html:not(.adfast-disabled) .html5-video-player.ad-showing .ytp-chrome-bottom,
+html:not(.adfast-disabled) .html5-video-player.ad-interrupting .ytp-chrome-bottom {
+  opacity: 0 !important;
+}
+
+/* Hide loading spinner during ad transitions */
+html:not(.adfast-disabled) .ad-showing .ytp-spinner,
+html:not(.adfast-disabled) .ad-showing .ytp-spinner-container {
+  display: none !important;
+}
+
 /* Ensure ad skip buttons remain visible, unblocked, and clickable */
 html:not(.adfast-disabled) .ytp-ad-skip-button-slot,
 html:not(.adfast-disabled) .ytp-ad-skip-button-modern,

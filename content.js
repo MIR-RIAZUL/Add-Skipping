@@ -17,10 +17,6 @@
   let lastAdCountedTime = 0;
   const AD_COUNT_DEBOUNCE_MS = 1500;
 
-  // Strict 1200ms cooldown for trusted CDP clicks to prevent hitting scrub bar
-  let lastTrustedClickTime = 0;
-  const TRUSTED_CLICK_COOLDOWN_MS = 1200;
-
   // Debounce for skip button triggers to prevent event storming
   let lastSkipTime = 0;
   const SKIP_DEBOUNCE_MS = 150;
@@ -122,38 +118,6 @@
   });
 
   /**
-   * Request a genuine hardware-level mouse click via chrome.debugger (CDP) in background.js.
-   * This generates an event with event.isTrusted === true that YouTube's player accepts.
-   * Debounced with 1200ms cooldown and gated strictly on active ad classes to prevent hitting the scrub bar.
-   */
-  function requestTrustedClick(x, y) {
-    const now = Date.now();
-    if (now - lastTrustedClickTime < TRUSTED_CLICK_COOLDOWN_MS) {
-      return;
-    }
-    if (!isPlayerShowingAd()) {
-      return;
-    }
-    lastTrustedClickTime = now;
-
-    try {
-      if (typeof chrome !== 'undefined' && chrome.runtime && typeof chrome.runtime.sendMessage === 'function') {
-        chrome.runtime.sendMessage({
-          action: 'adfast:trusted-click',
-          x,
-          y
-        }, () => {
-          if (chrome.runtime && chrome.runtime.lastError) {
-            // Background is dormant or disconnected
-          }
-        });
-      }
-    } catch (e) {
-      // Runtime context invalidated
-    }
-  }
-
-  /**
    * Verify that a skip button has real rendered dimensions (>10x10) and is visible.
    */
   function isButtonVisibleAndClickable(btn, rect) {
@@ -171,8 +135,8 @@
   }
 
   /**
-   * Click any available skip or close buttons using trusted CDP clicks (max once per ad)
-   * and safe synthetic clicks directly on the button element.
+   * Click any available skip or close buttons using standard DOM click events
+   * and synthetic pointer/mouse sequences directly on the button element.
    */
   function clickSkipButtons() {
     if (!isPlayerShowingAd()) {
@@ -194,28 +158,26 @@
             // Verify button has real rendered dimensions in viewport (>10x10) and is visible
             if (isButtonVisibleAndClickable(btn, rect)) {
               lastSkipTime = now;
+              clickedCurrentAd = true;
               const clientX = Math.round(rect.left + rect.width / 2);
               const clientY = Math.round(rect.top + rect.height / 2);
 
-              // 1. Dispatch genuine trusted click via background CDP (only ONCE per ad cycle)
-              if (!clickedCurrentAd && isPlayerShowingAd()) {
-                clickedCurrentAd = true;
-                requestTrustedClick(clientX, clientY);
-              }
-
-              // 2. Direct synthetic DOM click is safe and cannot hit the scrub bar beneath it
+              // 1. Direct standard DOM click on the button element
               if (typeof btn.click === 'function') {
                 btn.click();
               }
 
-              // Synthetic Pointer/Touch/Mouse events directly on the button element
+              // 2. Synthetic Pointer/Mouse events directly on the button element
               const eventOpts = { bubbles: true, cancelable: true, view: window, clientX, clientY };
               try {
                 btn.dispatchEvent(new PointerEvent('pointerdown', eventOpts));
+                btn.dispatchEvent(new MouseEvent('mousedown', eventOpts));
                 btn.dispatchEvent(new PointerEvent('pointerup', eventOpts));
+                btn.dispatchEvent(new MouseEvent('mouseup', eventOpts));
                 btn.dispatchEvent(new MouseEvent('click', eventOpts));
               } catch (e) {}
 
+              // 3. TouchEvents for mobile/touch interfaces
               try {
                 btn.dispatchEvent(new TouchEvent('touchstart', { bubbles: true, cancelable: true }));
                 btn.dispatchEvent(new TouchEvent('touchend', { bubbles: true, cancelable: true }));
@@ -319,11 +281,12 @@
       video.playbackRate = 16;
     }
 
-    // CRITICAL FIX: NEVER set video.currentTime = video.duration on skippable ads!
-    // Forcing currentTime to duration triggers YouTube's post-ad end-card freeze,
-    // where the video stops and waits indefinitely for a user click.
-    // Instead, 16x speed rapidly brings up the Skip button and clickSkipButtons()
-    // sends a genuine hardware-level CDP trusted click via background.js.
+    // Fast-forward video currentTime to end if finite
+    if (isFinite(video.duration) && video.duration > 0 && video.currentTime < video.duration) {
+      try {
+        video.currentTime = video.duration - 0.1;
+      } catch (e) {}
+    }
 
     // Ensure playback isn't stalled (NOTE: Never dispatchEvent('ended') - corrupts MSE pipeline)
     if (video.paused && video.currentTime > 0) {
@@ -335,17 +298,31 @@
   }
 
   /**
-   * Detect and automatically dismiss anti-adblock enforcement dialogs
+   * Detect and automatically dismiss anti-adblock enforcement dialogs and unlock scrolling
    */
   function dismissEnforcementModals() {
     const enforcementMsg = document.querySelector('ytd-enforcement-message-view-model');
     if (enforcementMsg) {
       const dialog = enforcementMsg.closest('tp-yt-paper-dialog') || enforcementMsg.closest('ytd-popup-container');
       if (dialog) {
-        dialog.remove();
+        try { dialog.remove(); } catch (e) {}
       }
-      document.querySelectorAll('tp-yt-iron-overlay-backdrop').forEach(el => el.remove());
+      try { enforcementMsg.remove(); } catch (e) {}
+
+      document.querySelectorAll('tp-yt-iron-overlay-backdrop').forEach((el) => {
+        try { el.remove(); } catch (e) {}
+      });
       document.documentElement.classList.add('adfast-backdrop-blocked');
+
+      // Restore scroll locks if YouTube disabled scrolling
+      [document.body, document.documentElement, document.querySelector('ytd-app')].forEach((el) => {
+        if (!el) return;
+        el.style.removeProperty('overflow');
+        el.style.removeProperty('position');
+        el.style.removeProperty('top');
+        el.style.removeProperty('width');
+        el.style.removeProperty('touch-action');
+      });
 
       const video = document.querySelector('video.html5-main-video') || document.querySelector('video');
       if (video && video.paused) {
@@ -462,6 +439,14 @@
         playerObserver = null;
       }
       attachPlayerObserver();
+
+      // Auto-resume playback if paused immediately following ad interception
+      setTimeout(() => {
+        const video = document.querySelector('video.html5-main-video') || document.querySelector('#movie_player video');
+        if (video && video.currentTime < 2 && video.paused && !isPlayerShowingAd()) {
+          video.play().catch(() => {});
+        }
+      }, 500);
     });
 
     window.addEventListener('yt-page-data-updated', processAdCycle);

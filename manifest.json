@@ -1,11 +1,10 @@
 {
   "manifest_version": 3,
-  "name": "AdFast - Instant YouTube Ad Skipper",
+  "name": "AdFast - Ad Skipper for YouTube",
   "version": "1.2.0",
-  "description": "Instantly bypasses video ads and removes banner ads on YouTube without triggering anti-adblock detection.",
+  "description": "Automatically skips video ads and removes banner clutter on YouTube for uninterrupted playback.",
   "permissions": [
-    "storage",
-    "debugger"
+    "storage"
   ],
   "host_permissions": [
     "*://*.youtube.com/*"
@@ -18,12 +17,14 @@
     "default_title": "AdFast Controls",
     "default_icon": {
       "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
       "48": "icons/icon48.png",
       "128": "icons/icon128.png"
     }
   },
   "icons": {
     "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
   },

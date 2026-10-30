@@ -91,7 +91,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       resetBtn.style.borderColor = 'rgba(43, 166, 64, 0.4)';
 
       setTimeout(() => {
-        resetBtnText.textContent = 'Reset Counter';
+        resetBtnText.textContent = 'Reset stats';
         resetBtn.style.color = '';
         resetBtn.style.borderColor = '';
       }, 1200);

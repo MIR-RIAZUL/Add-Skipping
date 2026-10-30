@@ -319,12 +319,6 @@
       video.playbackRate = 16;
     }
 
-    // CRITICAL FIX: NEVER set video.currentTime = video.duration on skippable ads!
-    // Forcing currentTime to duration triggers YouTube's post-ad end-card freeze,
-    // where the video stops and waits indefinitely for a user click.
-    // Instead, 16x speed rapidly brings up the Skip button and clickSkipButtons()
-    // sends a genuine hardware-level CDP trusted click via background.js.
-
     // Ensure playback isn't stalled (NOTE: Never dispatchEvent('ended') - corrupts MSE pipeline)
     if (video.paused && video.currentTime > 0) {
       video.play().catch(() => {});
@@ -335,17 +329,31 @@
   }
 
   /**
-   * Detect and automatically dismiss anti-adblock enforcement dialogs
+   * Detect and automatically dismiss anti-adblock enforcement dialogs and unlock scrolling
    */
   function dismissEnforcementModals() {
     const enforcementMsg = document.querySelector('ytd-enforcement-message-view-model');
     if (enforcementMsg) {
       const dialog = enforcementMsg.closest('tp-yt-paper-dialog') || enforcementMsg.closest('ytd-popup-container');
       if (dialog) {
-        dialog.remove();
+        try { dialog.remove(); } catch (e) {}
       }
-      document.querySelectorAll('tp-yt-iron-overlay-backdrop').forEach(el => el.remove());
+      try { enforcementMsg.remove(); } catch (e) {}
+
+      document.querySelectorAll('tp-yt-iron-overlay-backdrop').forEach((el) => {
+        try { el.remove(); } catch (e) {}
+      });
       document.documentElement.classList.add('adfast-backdrop-blocked');
+
+      // Restore scroll locks if YouTube disabled scrolling
+      [document.body, document.documentElement, document.querySelector('ytd-app')].forEach((el) => {
+        if (!el) return;
+        el.style.removeProperty('overflow');
+        el.style.removeProperty('position');
+        el.style.removeProperty('top');
+        el.style.removeProperty('width');
+        el.style.removeProperty('touch-action');
+      });
 
       const video = document.querySelector('video.html5-main-video') || document.querySelector('video');
       if (video && video.paused) {
@@ -462,6 +470,14 @@
         playerObserver = null;
       }
       attachPlayerObserver();
+
+      // Auto-resume playback if paused immediately following ad interception
+      setTimeout(() => {
+        const video = document.querySelector('video.html5-main-video') || document.querySelector('#movie_player video');
+        if (video && video.currentTime < 2 && video.paused && !isPlayerShowingAd()) {
+          video.play().catch(() => {});
+        }
+      }, 500);
     });
 
     window.addEventListener('yt-page-data-updated', processAdCycle);

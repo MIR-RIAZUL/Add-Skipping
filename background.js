@@ -45,45 +45,54 @@ async function dispatchTrustedClick(tabId, x, y) {
     const clickY = Math.round(y);
 
     try {
-      // 1. Attach debugger if not already attached to this tab
-      if (!attachedTabs.has(tabId)) {
-        try {
-          await chrome.debugger.attach(target, '1.3');
-          attachedTabs.add(tabId);
-        } catch (attachErr) {
-          const msg = attachErr?.message || '';
-          if (msg.includes('Already attached') || msg.includes('another debugger')) {
+      const executeCDP = async () => {
+        // 1. Attach debugger if not already attached to this tab
+        if (!attachedTabs.has(tabId)) {
+          try {
+            await chrome.debugger.attach(target, '1.3');
             attachedTabs.add(tabId);
-          } else {
-            throw attachErr;
+          } catch (attachErr) {
+            const msg = attachErr?.message || '';
+            if (msg.includes('Already attached') || msg.includes('another debugger')) {
+              attachedTabs.add(tabId);
+            } else {
+              throw attachErr;
+            }
           }
         }
-      }
 
-      // 2. Dispatch mousePressed (left click)
-      await chrome.debugger.sendCommand(target, 'Input.dispatchMouseEvent', {
-        type: 'mousePressed',
-        x: clickX,
-        y: clickY,
-        button: 'left',
-        buttons: 1,
-        clickCount: 1
+        // 2. Dispatch mousePressed (left click)
+        await chrome.debugger.sendCommand(target, 'Input.dispatchMouseEvent', {
+          type: 'mousePressed',
+          x: clickX,
+          y: clickY,
+          button: 'left',
+          buttons: 1,
+          clickCount: 1
+        });
+
+        // Small realistic pause between press and release (30ms)
+        await new Promise((resolve) => setTimeout(resolve, 30));
+
+        // 3. Dispatch mouseReleased
+        await chrome.debugger.sendCommand(target, 'Input.dispatchMouseEvent', {
+          type: 'mouseReleased',
+          x: clickX,
+          y: clickY,
+          button: 'left',
+          buttons: 0,
+          clickCount: 1
+        });
+
+        return { success: true };
+      };
+
+      // Wrap CDP operations in a 1500ms safety timeout to prevent deadlocks
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('CDP execution timeout')), 1500);
       });
 
-      // Small realistic pause between press and release (30ms)
-      await new Promise((resolve) => setTimeout(resolve, 30));
-
-      // 3. Dispatch mouseReleased
-      await chrome.debugger.sendCommand(target, 'Input.dispatchMouseEvent', {
-        type: 'mouseReleased',
-        x: clickX,
-        y: clickY,
-        button: 'left',
-        buttons: 0,
-        clickCount: 1
-      });
-
-      return { success: true };
+      return await Promise.race([executeCDP(), timeoutPromise]);
     } catch (err) {
       console.warn('[AdFast Background] CDP trusted click error:', err?.message || err);
       return { success: false, error: err?.message || String(err) };

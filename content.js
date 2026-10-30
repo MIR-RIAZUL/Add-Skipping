@@ -326,7 +326,7 @@
     // sends a genuine hardware-level CDP trusted click via background.js.
 
     // Ensure playback isn't stalled (NOTE: Never dispatchEvent('ended') - corrupts MSE pipeline)
-    if (video.paused) {
+    if (video.paused && video.currentTime > 0) {
       video.play().catch(() => {});
     }
 
@@ -447,11 +447,11 @@
       }, 200);
     }
 
-    // Lightweight 100ms periodic heartbeat (low CPU, skips when tab hidden unless in ad)
+    // Lightweight 200ms periodic heartbeat (low CPU, skips when tab hidden unless in ad)
     setInterval(() => {
       if (document.hidden && !isCurrentlyInAd) return;
       processAdCycle();
-    }, 100);
+    }, 200);
 
     // YouTube SPA navigation events
     window.addEventListener('yt-navigate-finish', () => {
